@@ -15,16 +15,16 @@ abstract final class AppTheme {
 
   static TextTheme _mergedTextTheme(TextTheme inter, Color onSurface) {
     TextStyle manropeFrom(TextStyle? base) => GoogleFonts.manrope(
-          textStyle: base,
-          color: onSurface,
-          height: base?.height,
-        );
+      textStyle: base,
+      color: onSurface,
+      height: base?.height,
+    );
 
     TextStyle interFrom(TextStyle? base) => GoogleFonts.inter(
-          textStyle: base,
-          color: onSurface,
-          height: base?.height,
-        );
+      textStyle: base,
+      color: onSurface,
+      height: base?.height,
+    );
 
     return inter.copyWith(
       displayLarge: manropeFrom(inter.displayLarge),
@@ -107,9 +107,7 @@ abstract final class AppTheme {
         ),
       ),
       textButtonTheme: TextButtonThemeData(
-        style: TextButton.styleFrom(
-          foregroundColor: PrimaryPalette.p500,
-        ),
+        style: TextButton.styleFrom(foregroundColor: PrimaryPalette.p500),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
@@ -127,7 +125,9 @@ abstract final class AppTheme {
           borderSide: const BorderSide(color: PrimaryPalette.p500, width: 1.5),
         ),
         labelStyle: TextStyle(color: AppColors.textSecondary),
-        hintStyle: TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.75)),
+        hintStyle: TextStyle(
+          color: AppColors.textSecondary.withValues(alpha: 0.75),
+        ),
       ),
       sliderTheme: SliderThemeData(
         activeTrackColor: PrimaryPalette.p500,

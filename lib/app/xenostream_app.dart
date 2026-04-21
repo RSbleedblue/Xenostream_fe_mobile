@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 
 import '../core/session/active_voice_profile_store.dart';
 import '../features/voice_enrollment/data/voice_enrollment_repository.dart';
 import '../features/voice_synthesis/data/voice_synthesis_repository.dart';
+import '../features/voice_synthesis/presentation/bloc/synthesis_bloc.dart';
 import 'app_router.dart';
 import 'theme/app_theme.dart';
 
@@ -41,12 +44,23 @@ class _XenoStreamAppState extends State<XenoStreamApp> {
           value: widget.voiceSynthesisRepository,
         ),
       ],
-      child: MaterialApp.router(
-        title: 'XenoStream',
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.light,
-        themeMode: ThemeMode.light,
-        routerConfig: _router,
+      child: Builder(
+        builder: (BuildContext context) {
+          return BlocProvider<SynthesisBloc>(
+            create: (BuildContext ctx) => SynthesisBloc(
+              repository: ctx.read<VoiceSynthesisRepository>(),
+              activeVoiceProfileStore: ctx.read<ActiveVoiceProfileStore>(),
+              audioPlayer: AudioPlayer(),
+            ),
+            child: MaterialApp.router(
+              title: 'XenoStream',
+              debugShowCheckedModeBanner: false,
+              theme: AppTheme.light,
+              themeMode: ThemeMode.light,
+              routerConfig: _router,
+            ),
+          );
+        },
       ),
     );
   }

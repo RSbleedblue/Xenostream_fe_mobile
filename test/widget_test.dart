@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:xenostream_fe_mobile/app/xenostream_app.dart';
@@ -14,8 +15,15 @@ void main() {
         voiceSynthesisRepository: FakeVoiceSynthesisRepository(),
       ),
     );
+    await tester.pumpAndSettle();
 
-    expect(find.text('Welcome'), findsOneWidget);
-    expect(find.text('Record & lock voice'), findsOneWidget);
+    expect(find.textContaining('Capture New'), findsOneWidget);
+    expect(find.text('Start Recording'), findsOneWidget);
+    expect(find.textContaining('Neural Echo'), findsOneWidget);
+
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -360));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Quick Synthesis'), findsOneWidget);
   });
 }

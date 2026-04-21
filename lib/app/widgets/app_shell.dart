@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/constants/app_brand.dart';
+import 'app_header.dart';
+
 class AppShell extends StatelessWidget {
   const AppShell({super.key, required this.navigationShell});
 
@@ -10,9 +13,27 @@ class AppShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final index = navigationShell.currentIndex;
+
     return Scaffold(
-      body: navigationShell,
-      floatingActionButton: navigationShell.currentIndex == _libraryBranchIndex
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            AppHeader(
+              title: kAppDisplayName,
+              onAvatarTap: () {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Profile — coming soon')),
+                );
+              },
+            ),
+            Expanded(child: navigationShell),
+          ],
+        ),
+      ),
+      floatingActionButton: index == _libraryBranchIndex
           ? FloatingActionButton(
               onPressed: () {
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -23,7 +44,7 @@ class AppShell extends StatelessWidget {
             )
           : null,
       bottomNavigationBar: NavigationBar(
-        selectedIndex: navigationShell.currentIndex,
+        selectedIndex: index,
         onDestinationSelected: navigationShell.goBranch,
         destinations: const [
           NavigationDestination(
