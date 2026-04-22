@@ -1,7 +1,7 @@
 import '../domain/synthesis_result.dart';
 import 'voice_synthesis_repository.dart';
 
-/// Returns a bundled asset so playback works offline until the real API exists.
+/// Returns a bundled asset so playback works offline when the backend is down.
 class FakeVoiceSynthesisRepository implements VoiceSynthesisRepository {
   static const String placeholderAsset = 'assets/audio/placeholder.wav';
 

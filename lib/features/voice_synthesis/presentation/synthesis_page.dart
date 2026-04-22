@@ -7,6 +7,7 @@ import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_radii.dart';
 import '../../../app/theme/app_theme.dart';
 import '../../../core/session/active_voice_profile_store.dart';
+import '../../voice_enrollment/data/voice_enrollment_repository.dart';
 import 'bloc/synthesis_bloc.dart';
 import 'bloc/synthesis_event.dart';
 import 'bloc/synthesis_state.dart';
@@ -234,10 +235,9 @@ class _SynthesisPageState extends State<SynthesisPage> {
                                     ],
                                   ),
                                 ),
-                                Icon(
-                                  Icons.circle,
-                                  size: 10,
-                                  color: AppColors.primaryPurple,
+                                _VoiceProfileMenu(
+                                  voiceId: profile.id,
+                                  store: store,
                                 ),
                               ],
                             ),
@@ -377,6 +377,7 @@ class _SynthesisPageState extends State<SynthesisPage> {
                   subtitle: 'Preview clip • just now',
                   onPlay: () => bloc.add(const SynthesisPlayPauseToggled()),
                   isPlaying: isPlaying,
+                  onDelete: () => bloc.add(const SynthesisResultCleared()),
                 )
               else
                 Padding(
@@ -589,12 +590,14 @@ class _RecentTile extends StatelessWidget {
     required this.subtitle,
     required this.onPlay,
     required this.isPlaying,
+    this.onDelete,
   });
 
   final String title;
   final String subtitle;
   final VoidCallback onPlay;
   final bool isPlaying;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -633,11 +636,103 @@ class _RecentTile extends StatelessWidget {
           subtitle,
           style: textTheme.bodySmall?.copyWith(color: AppColors.textSecondary),
         ),
-        trailing: Text(
-          'Today',
-          style: textTheme.labelSmall?.copyWith(color: AppColors.textSecondary),
+        trailing: PopupMenuButton<String>(
+          icon: Icon(Icons.more_vert_rounded, color: AppColors.textSecondary),
+          shape: RoundedRectangleBorder(borderRadius: AppRadii.mdBorder),
+          onSelected: (value) {
+            if (value == 'delete' && onDelete != null) onDelete!();
+          },
+          itemBuilder: (_) => [
+            if (onDelete != null)
+              const PopupMenuItem(
+                value: 'delete',
+                child: Row(
+                  children: [
+                    Icon(Icons.delete_outline_rounded, color: Colors.red, size: 20),
+                    SizedBox(width: 10),
+                    Text('Delete', style: TextStyle(color: Colors.red)),
+                  ],
+                ),
+              ),
+          ],
         ),
       ),
     );
+  }
+}
+
+class _VoiceProfileMenu extends StatelessWidget {
+  const _VoiceProfileMenu({
+    required this.voiceId,
+    required this.store,
+  });
+
+  final String voiceId;
+  final ActiveVoiceProfileStore store;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      icon: Icon(Icons.more_vert_rounded, color: AppColors.textSecondary),
+      shape: RoundedRectangleBorder(borderRadius: AppRadii.mdBorder),
+      onSelected: (value) {
+        if (value == 'delete') {
+          _confirmDelete(context);
+        }
+      },
+      itemBuilder: (_) => [
+        const PopupMenuItem(
+          value: 'delete',
+          child: Row(
+            children: [
+              Icon(Icons.delete_outline_rounded, color: Colors.red, size: 20),
+              SizedBox(width: 10),
+              Text('Delete voice', style: TextStyle(color: Colors.red)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _confirmDelete(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete voice?'),
+        content: const Text(
+          'This will permanently remove the voice profile from the server. You can always record a new one.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+
+    try {
+      final repo = context.read<VoiceEnrollmentRepository>();
+      await repo.deleteVoice(voiceId: voiceId);
+      store.clear();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Voice profile deleted.')),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to delete: $e')),
+        );
+      }
+    }
   }
 }

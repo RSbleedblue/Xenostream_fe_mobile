@@ -27,3 +27,7 @@ final class SynthesisPlayPauseToggled extends SynthesisEvent {
 final class SynthesisPlaybackEnded extends SynthesisEvent {
   const SynthesisPlaybackEnded();
 }
+
+final class SynthesisResultCleared extends SynthesisEvent {
+  const SynthesisResultCleared();
+}

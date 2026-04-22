@@ -7,6 +7,7 @@ import '../../../app/theme/app_radii.dart';
 import '../../../app/theme/app_theme.dart';
 import '../../../core/session/active_voice_profile_store.dart';
 import '../../../shared/domain/voice_profile.dart';
+import '../../voice_enrollment/data/voice_enrollment_repository.dart';
 import '../../voice_synthesis/presentation/bloc/synthesis_bloc.dart';
 import '../../voice_synthesis/presentation/bloc/synthesis_event.dart';
 import '../../voice_synthesis/presentation/bloc/synthesis_state.dart';
@@ -65,7 +66,7 @@ class _HomePageState extends State<HomePage> {
                     backgroundColor: AppColors.primaryPurple.withValues(alpha: 0.15),
                     child: const Icon(Icons.verified_rounded, color: AppColors.primaryPurple),
                   ),
-                  title: const Text('Your locked voice'),
+                  title: Text(profile.displayName),
                   subtitle: Text(profile.id, maxLines: 1, overflow: TextOverflow.ellipsis),
                   onTap: () => Navigator.pop(ctx, 'Your locked voice'),
                 ),
@@ -175,17 +176,18 @@ class _HomePageState extends State<HomePage> {
                               leadingIsPlay: true,
                               isPlaying: isPlaying,
                               onPlay: () => bloc.add(const SynthesisPlayPauseToggled()),
+                              onDelete: () => bloc.add(const SynthesisResultCleared()),
                             ),
-                          _RecentAudioTile(
-                            title: 'Podcast_Intro_v2',
-                            subtitle: 'Processing audio model…',
-                            trailingDownload: false,
-                            leadingIsPlay: false,
-                            isPlaying: false,
-                            showProgress: true,
-                            onPlay: () {},
-                          ),
-                          if (!hasAudio)
+                          if (!hasAudio) ...[
+                            _RecentAudioTile(
+                              title: 'Podcast_Intro_v2',
+                              subtitle: 'Processing audio model…',
+                              trailingDownload: false,
+                              leadingIsPlay: false,
+                              isPlaying: false,
+                              showProgress: true,
+                              onPlay: () {},
+                            ),
                             _RecentAudioTile(
                               title: 'Documentary_Open',
                               subtitle: 'Deep Narrator • 02:45 • 2 hours ago',
@@ -194,6 +196,7 @@ class _HomePageState extends State<HomePage> {
                               isPlaying: false,
                               onPlay: () => context.go('/library'),
                             ),
+                          ],
                         ],
                       );
                     },
@@ -412,6 +415,7 @@ class _VoiceCarousel extends StatelessWidget {
           subtitle: 'Studio Quality • Your clone',
           badge: 'ACTIVE',
           highlight: true,
+          onDelete: () => _confirmDeleteVoice(context, profile!),
         ),
       );
     }
@@ -436,6 +440,46 @@ class _VoiceCarousel extends StatelessWidget {
       ),
     );
   }
+
+  Future<void> _confirmDeleteVoice(BuildContext context, VoiceProfile profile) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete voice?'),
+        content: const Text(
+          'This will permanently remove the voice profile from the server. You can always record a new one.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+
+    try {
+      final repo = context.read<VoiceEnrollmentRepository>();
+      await repo.deleteVoice(voiceId: profile.id);
+      if (!context.mounted) return;
+      context.read<ActiveVoiceProfileStore>().clear();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Voice profile deleted.')),
+      );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to delete: $e')),
+        );
+      }
+    }
+  }
 }
 
 class _VoiceCloneCard extends StatelessWidget {
@@ -444,12 +488,14 @@ class _VoiceCloneCard extends StatelessWidget {
     required this.subtitle,
     required this.badge,
     required this.highlight,
+    this.onDelete,
   });
 
   final String name;
   final String subtitle;
   final String badge;
   final bool highlight;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -490,23 +536,50 @@ class _VoiceCloneCard extends StatelessWidget {
                     child: const Icon(Icons.mic_rounded, color: AppColors.primaryPurple),
                   ),
                   const Spacer(),
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: TertiaryPalette.t100,
-                      borderRadius: BorderRadius.circular(6),
+                  if (onDelete != null)
+                    SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: PopupMenuButton<String>(
+                        padding: EdgeInsets.zero,
+                        iconSize: 18,
+                        icon: Icon(Icons.more_vert_rounded, color: AppColors.textSecondary, size: 18),
+                        shape: RoundedRectangleBorder(borderRadius: AppRadii.mdBorder),
+                        onSelected: (value) {
+                          if (value == 'delete') onDelete!();
+                        },
+                        itemBuilder: (_) => [
+                          const PopupMenuItem(
+                            value: 'delete',
+                            child: Row(
+                              children: [
+                                Icon(Icons.delete_outline_rounded, color: Colors.red, size: 20),
+                                SizedBox(width: 10),
+                                Text('Delete voice', style: TextStyle(color: Colors.red)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      child: Text(
-                        badge,
-                        style: textTheme.labelSmall?.copyWith(
-                          color: TertiaryPalette.t700,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 0.4,
+                  if (onDelete == null)
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: TertiaryPalette.t100,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        child: Text(
+                          badge,
+                          style: textTheme.labelSmall?.copyWith(
+                            color: TertiaryPalette.t700,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.4,
+                          ),
                         ),
                       ),
                     ),
-                  ),
                 ],
               ),
               const Spacer(),
@@ -627,7 +700,7 @@ class _QuickSynthesisCard extends StatelessWidget {
                                 ),
                                 if (profile case final VoiceProfile p)
                                   Text(
-                                    p.id,
+                                    p.displayName,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: textTheme.labelSmall?.copyWith(color: AppColors.textSecondary),
@@ -764,6 +837,7 @@ class _RecentAudioTile extends StatelessWidget {
     required this.isPlaying,
     required this.onPlay,
     this.showProgress = false,
+    this.onDelete,
   });
 
   final String title;
@@ -773,6 +847,7 @@ class _RecentAudioTile extends StatelessWidget {
   final bool isPlaying;
   final VoidCallback onPlay;
   final bool showProgress;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -837,9 +912,25 @@ class _RecentAudioTile extends StatelessWidget {
                       onPressed: () {},
                       icon: Icon(Icons.download_outlined, color: AppColors.textSecondary),
                     ),
-                  IconButton(
-                    onPressed: () {},
+                  PopupMenuButton<String>(
                     icon: Icon(Icons.more_vert_rounded, color: AppColors.textSecondary),
+                    shape: RoundedRectangleBorder(borderRadius: AppRadii.mdBorder),
+                    onSelected: (value) {
+                      if (value == 'delete' && onDelete != null) onDelete!();
+                    },
+                    itemBuilder: (_) => [
+                      if (onDelete != null)
+                        const PopupMenuItem(
+                          value: 'delete',
+                          child: Row(
+                            children: [
+                              Icon(Icons.delete_outline_rounded, color: Colors.red, size: 20),
+                              SizedBox(width: 10),
+                              Text('Delete', style: TextStyle(color: Colors.red)),
+                            ],
+                          ),
+                        ),
+                    ],
                   ),
                 ],
               ),

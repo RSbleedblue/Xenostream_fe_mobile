@@ -29,9 +29,53 @@ final class EnrollmentElapsedUpdated extends EnrollmentEvent {
 }
 
 final class EnrollmentSubmitRequested extends EnrollmentEvent {
-  const EnrollmentSubmitRequested();
+  const EnrollmentSubmitRequested({this.name});
+
+  final String? name;
+
+  @override
+  List<Object?> get props => [name];
 }
 
 final class EnrollmentResetRequested extends EnrollmentEvent {
   const EnrollmentResetRequested();
+}
+
+final class EnrollmentPlaybackToggled extends EnrollmentEvent {
+  const EnrollmentPlaybackToggled();
+}
+
+final class EnrollmentPlaybackPositionChanged extends EnrollmentEvent {
+  const EnrollmentPlaybackPositionChanged(this.position);
+
+  final Duration position;
+
+  @override
+  List<Object?> get props => [position];
+}
+
+final class EnrollmentPlaybackDurationChanged extends EnrollmentEvent {
+  const EnrollmentPlaybackDurationChanged(this.duration);
+
+  final Duration duration;
+
+  @override
+  List<Object?> get props => [duration];
+}
+
+final class EnrollmentPlaybackCompleted extends EnrollmentEvent {
+  const EnrollmentPlaybackCompleted();
+}
+
+final class EnrollmentPlaybackSeekRequested extends EnrollmentEvent {
+  const EnrollmentPlaybackSeekRequested(this.position);
+
+  final Duration position;
+
+  @override
+  List<Object?> get props => [position];
+}
+
+final class EnrollmentDeleteRecordingRequested extends EnrollmentEvent {
+  const EnrollmentDeleteRecordingRequested();
 }

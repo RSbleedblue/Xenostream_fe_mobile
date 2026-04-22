@@ -21,6 +21,7 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
     on<SynthesisGenerateRequested>(_onGenerateRequested);
     on<SynthesisPlayPauseToggled>(_onPlayPauseToggled);
     on<SynthesisPlaybackEnded>(_onPlaybackEnded);
+    on<SynthesisResultCleared>(_onResultCleared);
 
     _playerStateSubscription = _audioPlayer.playerStateStream.listen((playerState) {
       if (playerState.processingState == ProcessingState.completed) {
@@ -87,7 +88,13 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
         voiceProfileId: profile.id,
         text: state.text.trim(),
       );
-      await _audioPlayer.setAsset(result.audioAssetPath);
+      if (result.audioFilePath != null) {
+        await _audioPlayer.setFilePath(result.audioFilePath!);
+      } else if (result.audioAssetPath != null) {
+        await _audioPlayer.setAsset(result.audioAssetPath!);
+      } else {
+        throw StateError('SynthesisResult has no playable source');
+      }
       emit(
         state.copyWith(
           phase: SynthesisPhase.ready,
@@ -141,6 +148,17 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
   ) {
     if (state.result == null) return;
     emit(state.copyWith(phase: SynthesisPhase.ready));
+  }
+
+  Future<void> _onResultCleared(
+    SynthesisResultCleared event,
+    Emitter<SynthesisState> emit,
+  ) async {
+    if (_audioPlayer.playing) {
+      await _audioPlayer.pause();
+    }
+    await _audioPlayer.stop();
+    emit(state.copyWith(phase: SynthesisPhase.idle, clearResult: true, clearError: true));
   }
 
   @override
