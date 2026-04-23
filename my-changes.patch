@@ -1,0 +1,576 @@
+diff --git a/lib/app/theme/app_colors.dart b/lib/app/theme/app_colors.dart
+index 14897fc..2f67f5f 100644
+--- a/lib/app/theme/app_colors.dart
++++ b/lib/app/theme/app_colors.dart
+@@ -8,7 +8,7 @@ import 'app_palette.dart';
+ /// Prefer palette tokens for new surfaces; keep using [AppColors] for
+ /// consistent imports across existing widgets.
+ abstract final class AppColors {
+-  static const Color canvas = NeutralPalette.n50;
++  static const Color canvas = PrimaryPalette.p50;
+   static const Color primaryPurple = PrimaryPalette.p500;
+   static const Color primaryPurpleDeep = SecondaryPalette.s800;
+   static const Color accentViolet = TertiaryPalette.t500;
+diff --git a/lib/core/api/api_config.dart b/lib/core/api/api_config.dart
+index 6ba31d1..293de69 100644
+--- a/lib/core/api/api_config.dart
++++ b/lib/core/api/api_config.dart
+@@ -20,7 +20,7 @@ class ApiConfig {
+   static const String _baseUrlFromEnv =
+       String.fromEnvironment('API_BASE_URL', defaultValue: '');
+   static const String _apiKeyFromEnv =
+-      String.fromEnvironment('API_KEY', defaultValue: '');
++      String.fromEnvironment('API_KEY', defaultValue: 'change-me');
+ 
+   /// Resolves a sensible default backend URL for the current platform.
+   factory ApiConfig.defaults() {
+diff --git a/lib/features/home/presentation/home_page.dart b/lib/features/home/presentation/home_page.dart
+index aebcebd..56be317 100644
+--- a/lib/features/home/presentation/home_page.dart
++++ b/lib/features/home/presentation/home_page.dart
+@@ -1,13 +1,13 @@
+ import 'package:flutter/material.dart';
+ import 'package:flutter_bloc/flutter_bloc.dart';
+ import 'package:go_router/go_router.dart';
++import 'package:provider/provider.dart';
+ import '../../../app/theme/app_colors.dart';
+ import '../../../app/theme/app_palette.dart';
+ import '../../../app/theme/app_radii.dart';
+ import '../../../app/theme/app_theme.dart';
++import '../../../core/api/xenostream_api_client.dart';
+ import '../../../core/session/active_voice_profile_store.dart';
+-import '../../../shared/domain/voice_profile.dart';
+-import '../../voice_enrollment/data/voice_enrollment_repository.dart';
+ import '../../voice_synthesis/presentation/bloc/synthesis_bloc.dart';
+ import '../../voice_synthesis/presentation/bloc/synthesis_event.dart';
+ import '../../voice_synthesis/presentation/bloc/synthesis_state.dart';
+@@ -20,19 +20,19 @@ class HomePage extends StatefulWidget {
+   State<HomePage> createState() => _HomePageState();
+ }
+ 
+-class _HomePageState extends State<HomePage> {
++class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+   final TextEditingController _scriptController = TextEditingController();
+-  String _targetVoiceLabel = 'Sarah Jenkins';
++  String _targetVoiceLabel = 'Select a voice';
+ 
+-  static const List<_DemoVoice> _demoVoices = <_DemoVoice>[
+-    _DemoVoice(name: 'Sarah Jenkins', subtitle: 'Studio Quality • Calm & Warm', badge: 'STUDIO'),
+-    _DemoVoice(name: 'Deep Narrator', subtitle: 'Documentary • Rich lows', badge: 'STUDIO'),
+-    _DemoVoice(name: 'Aurora Lite', subtitle: 'Social • Bright', badge: 'LITE'),
+-  ];
++  List<VoiceUploadResult> _apiVoices = [];
++  bool _voicesLoading = true;
+ 
+   @override
+   void initState() {
+     super.initState();
++    WidgetsBinding.instance.addObserver(this);
++    _fetchVoices();
++    context.read<ActiveVoiceProfileStore>().addListener(_onProfileChanged);
+     WidgetsBinding.instance.addPostFrameCallback((_) {
+       if (!mounted) return;
+       final t = context.read<SynthesisBloc>().state.text;
+@@ -45,14 +45,62 @@ class _HomePageState extends State<HomePage> {
+     });
+   }
+ 
++  @override
++  void didChangeAppLifecycleState(AppLifecycleState state) {
++    if (state == AppLifecycleState.resumed) _fetchVoices();
++  }
++
++  void _onProfileChanged() {
++    _fetchVoices();
++    final profile = context.read<ActiveVoiceProfileStore>().profile;
++    if (profile != null) {
++      context.read<SynthesisBloc>().add(SynthesisVoiceSelected(profile.id));
++      setState(() => _targetVoiceLabel = profile.displayName);
++    }
++  }
++
++  Future<void> _fetchVoices() async {
++    try {
++      final client = context.read<XenoStreamApiClient>();
++      final voices = await client.listVoices();
++      if (!mounted) return;
++      setState(() {
++        _apiVoices = voices;
++        _voicesLoading = false;
++      });
++      final bloc = context.read<SynthesisBloc>();
++      if (voices.isNotEmpty && bloc.state.selectedVoiceId == null) {
++        _selectVoice(voices.first);
++      }
++    } catch (_) {
++      if (!mounted) return;
++      setState(() => _voicesLoading = false);
++    }
++  }
++
++  void _selectVoice(VoiceUploadResult voice) {
++    setState(() => _targetVoiceLabel = _displayName(voice));
++    context.read<SynthesisBloc>().add(SynthesisVoiceSelected(voice.voiceId));
++  }
++
++  static String _displayName(VoiceUploadResult v) {
++    final filename = v.filePath.split('/').last.split('\\').last;
++    final dotIndex = filename.lastIndexOf('.');
++    final stem = dotIndex > 0 ? filename.substring(0, dotIndex) : filename;
++    if (stem.length <= 12) return stem;
++    return '${v.voiceId.substring(0, 8)}…';
++  }
++
+   @override
+   void dispose() {
++    context.read<ActiveVoiceProfileStore>().removeListener(_onProfileChanged);
++    WidgetsBinding.instance.removeObserver(this);
+     _scriptController.dispose();
+     super.dispose();
+   }
+ 
+-  Future<void> _pickTargetVoice(BuildContext context, VoiceProfile? profile) async {
+-    final choice = await showModalBottomSheet<String>(
++  Future<void> _pickTargetVoice(BuildContext context) async {
++    final choice = await showModalBottomSheet<VoiceUploadResult>(
+       context: context,
+       showDragHandle: true,
+       builder: (BuildContext ctx) {
+@@ -60,25 +108,21 @@ class _HomePageState extends State<HomePage> {
+           child: ListView(
+             shrinkWrap: true,
+             children: [
+-              if (profile != null)
+-                ListTile(
+-                  leading: CircleAvatar(
+-                    backgroundColor: AppColors.primaryPurple.withValues(alpha: 0.15),
+-                    child: const Icon(Icons.verified_rounded, color: AppColors.primaryPurple),
+-                  ),
+-                  title: Text(profile.displayName),
+-                  subtitle: Text(profile.id, maxLines: 1, overflow: TextOverflow.ellipsis),
+-                  onTap: () => Navigator.pop(ctx, 'Your locked voice'),
+-                ),
+-              for (final v in _demoVoices)
++              for (final v in _apiVoices)
+                 ListTile(
+                   leading: CircleAvatar(
+                     backgroundColor: TertiaryPalette.t100,
+                     child: Icon(Icons.graphic_eq_rounded, color: TertiaryPalette.t600),
+                   ),
+-                  title: Text(v.name),
+-                  subtitle: Text(v.subtitle),
+-                  onTap: () => Navigator.pop(ctx, v.name),
++                  title: Text(_displayName(v)),
++                  subtitle: Text(v.voiceId, maxLines: 1, overflow: TextOverflow.ellipsis),
++                  onTap: () => Navigator.pop(ctx, v),
++                ),
++              if (_apiVoices.isEmpty)
++                const ListTile(
++                  leading: Icon(Icons.info_outline_rounded),
++                  title: Text('No voices available'),
++                  subtitle: Text('Record or upload a voice first.'),
+                 ),
+             ],
+           ),
+@@ -86,14 +130,12 @@ class _HomePageState extends State<HomePage> {
+       },
+     );
+     if (choice != null && mounted) {
+-      setState(() => _targetVoiceLabel = choice);
++      _selectVoice(choice);
+     }
+   }
+ 
+   @override
+   Widget build(BuildContext context) {
+-    final store = context.watch<ActiveVoiceProfileStore>();
+-    final profile = store.profile;
+     final textTheme = Theme.of(context).textTheme;
+ 
+     return BlocListener<SynthesisBloc, SynthesisState>(
+@@ -131,9 +173,15 @@ class _HomePageState extends State<HomePage> {
+                     onAction: () => context.go('/library'),
+                   ),
+                   const SizedBox(height: 12),
+-                  _VoiceCarousel(
+-                    profile: profile,
+-                    demos: _demoVoices,
++                  BlocBuilder<SynthesisBloc, SynthesisState>(
++                    buildWhen: (a, b) => a.selectedVoiceId != b.selectedVoiceId,
++                    builder: (context, synthState) => _VoiceCarousel(
++                      voices: _apiVoices,
++                      selectedVoiceId: synthState.selectedVoiceId,
++                      loading: _voicesLoading,
++                      onRefresh: _fetchVoices,
++                      onSelect: _selectVoice,
++                    ),
+                   ),
+                   const SizedBox(height: 28),
+                   Text(
+@@ -147,8 +195,7 @@ class _HomePageState extends State<HomePage> {
+                   _QuickSynthesisCard(
+                     scriptController: _scriptController,
+                     targetLabel: _targetVoiceLabel,
+-                    profile: profile,
+-                    onPickVoice: () => _pickTargetVoice(context, profile),
++                    onPickVoice: () => _pickTargetVoice(context),
+                     onScriptChanged: (String v) =>
+                         context.read<SynthesisBloc>().add(SynthesisTextChanged(v)),
+                   ),
+@@ -211,18 +258,6 @@ class _HomePageState extends State<HomePage> {
+   }
+ }
+ 
+-class _DemoVoice {
+-  const _DemoVoice({
+-    required this.name,
+-    required this.subtitle,
+-    required this.badge,
+-  });
+-
+-  final String name;
+-  final String subtitle;
+-  final String badge;
+-}
+-
+ class _FeatureHeroCard extends StatelessWidget {
+   const _FeatureHeroCard({required this.onStartRecording});
+ 
+@@ -398,34 +433,38 @@ class _SectionTitleRow extends StatelessWidget {
+ 
+ class _VoiceCarousel extends StatelessWidget {
+   const _VoiceCarousel({
+-    required this.profile,
+-    required this.demos,
++    required this.voices,
++    required this.selectedVoiceId,
++    required this.loading,
++    required this.onRefresh,
++    required this.onSelect,
+   });
+ 
+-  final VoiceProfile? profile;
+-  final List<_DemoVoice> demos;
++  final List<VoiceUploadResult> voices;
++  final String? selectedVoiceId;
++  final bool loading;
++  final VoidCallback onRefresh;
++  final ValueChanged<VoiceUploadResult> onSelect;
+ 
+   @override
+   Widget build(BuildContext context) {
+-    final cards = <Widget>[];
+-    if (profile != null) {
+-      cards.add(
+-        _VoiceCloneCard(
+-          name: 'Your locked voice',
+-          subtitle: 'Studio Quality • Your clone',
+-          badge: 'ACTIVE',
+-          highlight: true,
+-          onDelete: () => _confirmDeleteVoice(context, profile!),
+-        ),
++    if (loading) {
++      return const SizedBox(
++        height: 152,
++        child: Center(child: CircularProgressIndicator()),
+       );
+     }
+-    for (final d in demos) {
+-      cards.add(
+-        _VoiceCloneCard(
+-          name: d.name,
+-          subtitle: d.subtitle,
+-          badge: d.badge,
+-          highlight: false,
++
++    if (voices.isEmpty) {
++      return SizedBox(
++        height: 152,
++        child: Center(
++          child: Text(
++            'No voices yet — record or upload one to get started.',
++            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
++                  color: AppColors.textSecondary,
++                ),
++          ),
+         ),
+       );
+     }
+@@ -434,14 +473,27 @@ class _VoiceCarousel extends StatelessWidget {
+       height: 152,
+       child: ListView.separated(
+         scrollDirection: Axis.horizontal,
+-        itemCount: cards.length,
++        itemCount: voices.length,
+         separatorBuilder: (BuildContext context, int index) => const SizedBox(width: 12),
+-        itemBuilder: (BuildContext context, int i) => cards[i],
++        itemBuilder: (BuildContext context, int i) {
++          final v = voices[i];
++          final isSelected = v.voiceId == selectedVoiceId;
++          return GestureDetector(
++            onTap: () => onSelect(v),
++            child: _VoiceCloneCard(
++              name: _HomePageState._displayName(v),
++              subtitle: v.voiceId,
++              badge: isSelected ? 'SELECTED' : 'VOICE',
++              highlight: isSelected,
++              onDelete: () => _confirmDeleteVoice(context, v),
++            ),
++          );
++        },
+       ),
+     );
+   }
+ 
+-  Future<void> _confirmDeleteVoice(BuildContext context, VoiceProfile profile) async {
++  Future<void> _confirmDeleteVoice(BuildContext context, VoiceUploadResult voice) async {
+     final confirmed = await showDialog<bool>(
+       context: context,
+       builder: (ctx) => AlertDialog(
+@@ -465,12 +517,12 @@ class _VoiceCarousel extends StatelessWidget {
+     if (confirmed != true || !context.mounted) return;
+ 
+     try {
+-      final repo = context.read<VoiceEnrollmentRepository>();
+-      await repo.deleteVoice(voiceId: profile.id);
++      final client = context.read<XenoStreamApiClient>();
++      await client.deleteVoice(voice.voiceId);
+       if (!context.mounted) return;
+-      context.read<ActiveVoiceProfileStore>().clear();
++      onRefresh();
+       ScaffoldMessenger.of(context).showSnackBar(
+-        const SnackBar(content: Text('Voice profile deleted.')),
++        const SnackBar(content: Text('Voice deleted.')),
+       );
+     } catch (e) {
+       if (context.mounted) {
+@@ -624,21 +676,18 @@ class _QuickSynthesisCard extends StatelessWidget {
+   const _QuickSynthesisCard({
+     required this.scriptController,
+     required this.targetLabel,
+-    required this.profile,
+     required this.onPickVoice,
+     required this.onScriptChanged,
+   });
+ 
+   final TextEditingController scriptController;
+   final String targetLabel;
+-  final VoiceProfile? profile;
+   final VoidCallback onPickVoice;
+   final ValueChanged<String> onScriptChanged;
+ 
+   @override
+   Widget build(BuildContext context) {
+     final textTheme = Theme.of(context).textTheme;
+-    final hintName = profile != null ? 'your locked voice' : 'Sarah';
+ 
+     return DecoratedBox(
+       decoration: BoxDecoration(
+@@ -658,7 +707,7 @@ class _QuickSynthesisCard extends StatelessWidget {
+           builder: (BuildContext context, SynthesisState state) {
+             final bloc = context.read<SynthesisBloc>();
+             final isGenerating = state.phase == SynthesisPhase.generating;
+-            final canGenerate = state.canGenerate && profile != null;
++            final canGenerate = state.canGenerate;
+ 
+             return Column(
+               crossAxisAlignment: CrossAxisAlignment.stretch,
+@@ -689,23 +738,11 @@ class _QuickSynthesisCard extends StatelessWidget {
+                           ),
+                           const SizedBox(width: 12),
+                           Expanded(
+-                            child: Column(
+-                              crossAxisAlignment: CrossAxisAlignment.start,
+-                              children: [
+-                                Text(
+-                                  targetLabel,
+-                                  style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+-                                  maxLines: 1,
+-                                  overflow: TextOverflow.ellipsis,
+-                                ),
+-                                if (profile case final VoiceProfile p)
+-                                  Text(
+-                                    p.displayName,
+-                                    maxLines: 1,
+-                                    overflow: TextOverflow.ellipsis,
+-                                    style: textTheme.labelSmall?.copyWith(color: AppColors.textSecondary),
+-                                  ),
+-                              ],
++                            child: Text(
++                              targetLabel,
++                              style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
++                              maxLines: 1,
++                              overflow: TextOverflow.ellipsis,
+                             ),
+                           ),
+                           Icon(Icons.keyboard_arrow_down_rounded, color: AppColors.textSecondary),
+@@ -730,7 +767,7 @@ class _QuickSynthesisCard extends StatelessWidget {
+                   minLines: 3,
+                   onChanged: onScriptChanged,
+                   decoration: InputDecoration(
+-                    hintText: 'Type what you want $hintName to say…',
++                    hintText: 'Type what you want the selected voice to say…',
+                     hintStyle: textTheme.bodyMedium?.copyWith(
+                       color: AppColors.textSecondary.withValues(alpha: 0.75),
+                     ),
+@@ -810,11 +847,11 @@ class _QuickSynthesisCard extends StatelessWidget {
+                     ),
+                   ),
+                 ),
+-                if (profile == null)
++                if (state.selectedVoiceId == null)
+                   Padding(
+                     padding: const EdgeInsets.only(top: 10),
+                     child: Text(
+-                      'Lock a voice in Record to enable synthesis.',
++                      'Select a voice above to enable synthesis.',
+                       style: textTheme.bodySmall?.copyWith(color: AppColors.textSecondary),
+                       textAlign: TextAlign.center,
+                     ),
+diff --git a/lib/features/voice_synthesis/presentation/bloc/synthesis_bloc.dart b/lib/features/voice_synthesis/presentation/bloc/synthesis_bloc.dart
+index 9758e0a..55ef170 100644
+--- a/lib/features/voice_synthesis/presentation/bloc/synthesis_bloc.dart
++++ b/lib/features/voice_synthesis/presentation/bloc/synthesis_bloc.dart
+@@ -14,10 +14,10 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
+     required ActiveVoiceProfileStore activeVoiceProfileStore,
+     required AudioPlayer audioPlayer,
+   })  : _repository = repository,
+-        _activeVoiceProfileStore = activeVoiceProfileStore,
+         _audioPlayer = audioPlayer,
+         super(const SynthesisState()) {
+     on<SynthesisTextChanged>(_onTextChanged);
++    on<SynthesisVoiceSelected>(_onVoiceSelected);
+     on<SynthesisGenerateRequested>(_onGenerateRequested);
+     on<SynthesisPlayPauseToggled>(_onPlayPauseToggled);
+     on<SynthesisPlaybackEnded>(_onPlaybackEnded);
+@@ -31,7 +31,6 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
+   }
+ 
+   final VoiceSynthesisRepository _repository;
+-  final ActiveVoiceProfileStore _activeVoiceProfileStore;
+   final AudioPlayer _audioPlayer;
+ 
+   late final StreamSubscription<PlayerState> _playerStateSubscription;
+@@ -56,18 +55,25 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
+     );
+   }
+ 
++  void _onVoiceSelected(
++    SynthesisVoiceSelected event,
++    Emitter<SynthesisState> emit,
++  ) {
++    emit(state.copyWith(selectedVoiceId: event.voiceId));
++  }
++
+   Future<void> _onGenerateRequested(
+     SynthesisGenerateRequested event,
+     Emitter<SynthesisState> emit,
+   ) async {
+     if (!state.canGenerate) return;
+ 
+-    final profile = _activeVoiceProfileStore.profile;
+-    if (profile == null) {
++    final voiceId = state.selectedVoiceId;
++    if (voiceId == null) {
+       emit(
+         state.copyWith(
+           phase: SynthesisPhase.failure,
+-          errorMessage: 'Enroll and lock a voice before synthesizing.',
++          errorMessage: 'Select a voice before synthesizing.',
+           clearResult: true,
+         ),
+       );
+@@ -85,7 +91,7 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
+     try {
+       await _audioPlayer.stop();
+       final result = await _repository.synthesize(
+-        voiceProfileId: profile.id,
++        voiceProfileId: voiceId,
+         text: state.text.trim(),
+       );
+       if (result.audioFilePath != null) {
+diff --git a/lib/features/voice_synthesis/presentation/bloc/synthesis_event.dart b/lib/features/voice_synthesis/presentation/bloc/synthesis_event.dart
+index a7b39fc..3c89c1a 100644
+--- a/lib/features/voice_synthesis/presentation/bloc/synthesis_event.dart
++++ b/lib/features/voice_synthesis/presentation/bloc/synthesis_event.dart
+@@ -16,6 +16,15 @@ final class SynthesisTextChanged extends SynthesisEvent {
+   List<Object?> get props => [text];
+ }
+ 
++final class SynthesisVoiceSelected extends SynthesisEvent {
++  const SynthesisVoiceSelected(this.voiceId);
++
++  final String voiceId;
++
++  @override
++  List<Object?> get props => [voiceId];
++}
++
+ final class SynthesisGenerateRequested extends SynthesisEvent {
+   const SynthesisGenerateRequested();
+ }
+diff --git a/lib/features/voice_synthesis/presentation/bloc/synthesis_state.dart b/lib/features/voice_synthesis/presentation/bloc/synthesis_state.dart
+index 4b21bd0..d3f6b89 100644
+--- a/lib/features/voice_synthesis/presentation/bloc/synthesis_state.dart
++++ b/lib/features/voice_synthesis/presentation/bloc/synthesis_state.dart
+@@ -14,33 +14,38 @@ final class SynthesisState extends Equatable {
+   const SynthesisState({
+     this.phase = SynthesisPhase.idle,
+     this.text = '',
++    this.selectedVoiceId,
+     this.result,
+     this.errorMessage,
+   });
+ 
+   final SynthesisPhase phase;
+   final String text;
++  final String? selectedVoiceId;
+   final SynthesisResult? result;
+   final String? errorMessage;
+ 
+-  bool get canGenerate => text.trim().isNotEmpty;
++  bool get canGenerate => text.trim().isNotEmpty && selectedVoiceId != null;
+ 
+   SynthesisState copyWith({
+     SynthesisPhase? phase,
+     String? text,
++    String? selectedVoiceId,
+     SynthesisResult? result,
+     String? errorMessage,
+     bool clearResult = false,
+     bool clearError = false,
++    bool clearVoiceId = false,
+   }) {
+     return SynthesisState(
+       phase: phase ?? this.phase,
+       text: text ?? this.text,
++      selectedVoiceId: clearVoiceId ? null : (selectedVoiceId ?? this.selectedVoiceId),
+       result: clearResult ? null : (result ?? this.result),
+       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
+     );
+   }
+ 
+   @override
+-  List<Object?> get props => [phase, text, result, errorMessage];
++  List<Object?> get props => [phase, text, selectedVoiceId, result, errorMessage];
+ }
+diff --git a/lib/features/voice_synthesis/presentation/synthesis_page.dart b/lib/features/voice_synthesis/presentation/synthesis_page.dart
+index 7fde285..1b7ffed 100644
+--- a/lib/features/voice_synthesis/presentation/synthesis_page.dart
++++ b/lib/features/voice_synthesis/presentation/synthesis_page.dart
+@@ -127,6 +127,15 @@ class _SynthesisPageState extends State<SynthesisPage> {
+                   ],
+                 ),
+               ),
++              const SizedBox(height: 12),
++              FilledButton.icon(
++                onPressed: () => context.go('/record'),
++                icon: const Icon(Icons.mic_rounded, size: 20),
++                label: const Text('Add Voice'),
++                style: FilledButton.styleFrom(
++                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
++                ),
++              ),
+               const SizedBox(height: 20),
+               _ScriptCard(
+                 controller: _controller,

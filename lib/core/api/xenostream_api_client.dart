@@ -66,6 +66,10 @@ class XenoStreamApiClient {
   Future<VoiceUploadResult> uploadVoice({
     required String localFilePath,
     String? originalFilename,
+    String? displayName,
+    String? details,
+    String? tags,
+    String? metadata,
   }) async {
     final file = File(localFilePath);
     if (!await file.exists()) {
@@ -82,6 +86,17 @@ class XenoStreamApiClient {
         ),
       );
 
+    void addFieldIfNonEmpty(String name, String? value) {
+      if (value == null) return;
+      final t = value.trim();
+      if (t.isNotEmpty) req.fields[name] = t;
+    }
+
+    addFieldIfNonEmpty('display_name', displayName);
+    addFieldIfNonEmpty('details', details);
+    addFieldIfNonEmpty('tags', tags);
+    addFieldIfNonEmpty('metadata', metadata);
+
     final streamed = await _http.send(req);
     final res = await http.Response.fromStream(streamed);
     _ensureOk(res, 'Upload voice');
@@ -89,24 +104,58 @@ class XenoStreamApiClient {
     final decoded = jsonDecode(res.body) as Map<String, dynamic>;
     return VoiceUploadResult(
       voiceId: decoded['voice_id'] as String,
-      filePath: decoded['file_path'] as String,
+      filePath: decoded['file_path'] as String? ?? '',
+      displayName: decoded['display_name'] as String?,
+      details: decoded['details'] as String?,
+      tags: _parseStringList(decoded['tags']),
+      metadata: _parseMetadataMap(decoded['metadata']),
     );
   }
 
   Future<List<VoiceUploadResult>> listVoices() async {
     final res = await _http.get(_uri('/v1/voices'), headers: _headers());
     _ensureOk(res, 'List voices');
-    final decoded = jsonDecode(res.body) as Map<String, dynamic>;
-    final rawList = decoded['voices'] as List<dynamic>? ?? [];
-    return rawList
-        .cast<Map<String, dynamic>>()
-        .map(
-          (e) => VoiceUploadResult(
-            voiceId: e['voice_id'] as String,
-            filePath: e['file_path'] as String,
-          ),
-        )
-        .toList();
+    final body = jsonDecode(res.body);
+    final List<dynamic> rawList = _voicesArrayFromListBody(body);
+    return <VoiceUploadResult>[
+      for (final e in rawList)
+        if (e is Map) _mapToVoice(Map<dynamic, dynamic>.from(e)),
+    ];
+  }
+
+  static List<dynamic> _voicesArrayFromListBody(Object? body) {
+    if (body is List) {
+      return body;
+    }
+    if (body is Map) {
+      final m = Map<dynamic, dynamic>.from(body);
+      if (m['voices'] is List) {
+        return m['voices']! as List<dynamic>;
+      }
+    }
+    return <dynamic>[];
+  }
+
+  static VoiceUploadResult _mapToVoice(Map<dynamic, dynamic> raw) {
+    final e = Map<String, dynamic>.from(raw);
+    return VoiceUploadResult(
+      voiceId: e['voice_id']! as String,
+      filePath: (e['file_path'] as String?) ?? '',
+      displayName: e['display_name'] as String?,
+      details: e['details'] as String?,
+      tags: _parseStringList(e['tags']),
+      metadata: _parseMetadataMap(e['metadata']),
+    );
+  }
+
+  static List<String>? _parseStringList(Object? o) {
+    if (o is! List) return null;
+    return o.map((e) => e.toString()).toList();
+  }
+
+  static Map<String, dynamic>? _parseMetadataMap(Object? o) {
+    if (o is! Map) return null;
+    return o.map((k, v) => MapEntry(k.toString(), v));
   }
 
   Future<void> deleteVoice(String voiceId) async {
@@ -130,7 +179,7 @@ class XenoStreamApiClient {
       body: jsonEncode({
         'text': text,
         'language': language,
-        'voice_id': ?voiceId,
+        if (voiceId != null) 'voice_id': voiceId,
         'speed': speed,
       }),
     );
@@ -156,7 +205,7 @@ class XenoStreamApiClient {
       body: jsonEncode({
         'text': text,
         'language': language,
-        'voice_id': ?voiceId,
+        if (voiceId != null) 'voice_id': voiceId,
         'speed': speed,
       }),
     );
@@ -214,11 +263,23 @@ class XenoStreamApiClient {
   void close() => _http.close();
 }
 
-/// Result of a POST /v1/voices upload.
+/// A voice from GET /v1/voices or a POST /v1/voices response.
 class VoiceUploadResult {
-  const VoiceUploadResult({required this.voiceId, required this.filePath});
+  const VoiceUploadResult({
+    required this.voiceId,
+    required this.filePath,
+    this.displayName,
+    this.details,
+    this.tags,
+    this.metadata,
+  });
+
   final String voiceId;
   final String filePath;
+  final String? displayName;
+  final String? details;
+  final List<String>? tags;
+  final Map<String, dynamic>? metadata;
 }
 
 /// Metadata returned by POST /v1/tts.

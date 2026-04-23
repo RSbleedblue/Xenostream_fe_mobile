@@ -25,6 +25,11 @@ final class SynthesisVoiceSelected extends SynthesisEvent {
   List<Object?> get props => [voiceId];
 }
 
+/// Clear [SynthesisState.selectedVoiceId] (e.g. after deleting the only voice on the server).
+final class SynthesisVoiceCleared extends SynthesisEvent {
+  const SynthesisVoiceCleared();
+}
+
 final class SynthesisGenerateRequested extends SynthesisEvent {
   const SynthesisGenerateRequested();
 }

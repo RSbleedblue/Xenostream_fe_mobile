@@ -22,6 +22,7 @@ dependencies:
   path: ^1.9.1
   google_fonts: ^6.2.1
   http: ^1.2.2
+  audio_session: ^0.1.25
 
 dev_dependencies:
   flutter_test:
@@ -36,12 +37,17 @@ flutter:
     - assets/branding/
     - assets/audio/
 
+# Native splash: canvas p50 to match the home screen; the center mark is
+# [brand_mark_splash] (light plate in brand_mark recolored to s800) so the logo
+# reads on the same background. Regenerate: python3 tool/generate_brand_mark_splash.py
+# then: dart run flutter_native_splash:create
 flutter_native_splash:
-  color: '#F8FAFC'
-  image: assets/branding/brand_mark.png
+  color: '#F4F5FF'
+  image: assets/branding/brand_mark_splash.png
   android_12:
-    color: '#F8FAFC'
-    image: assets/branding/brand_mark.png
+    color: '#F4F5FF'
+    image: assets/branding/brand_mark_splash.png
+    icon_background_color: '#F4F5FF'
 
 flutter_launcher_icons:
   android: true

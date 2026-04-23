@@ -11,12 +11,24 @@ class ApiVoiceEnrollmentRepository implements VoiceEnrollmentRepository {
   final XenoStreamApiClient _client;
 
   @override
-  Future<VoiceProfile> enroll({required String localAudioPath, String? name}) async {
-    final uploaded = await _client.uploadVoice(localFilePath: localAudioPath);
+  Future<VoiceProfile> enroll({
+    required String localAudioPath,
+    required String displayName,
+    String? details,
+    String? tags,
+    String? metadata,
+  }) async {
+    final uploaded = await _client.uploadVoice(
+      localFilePath: localAudioPath,
+      displayName: displayName,
+      details: details,
+      tags: tags,
+      metadata: metadata,
+    );
     return VoiceProfile(
       id: uploaded.voiceId,
       createdAt: DateTime.now().toUtc(),
-      name: name,
+      name: displayName,
     );
   }
 

@@ -29,12 +29,20 @@ final class EnrollmentElapsedUpdated extends EnrollmentEvent {
 }
 
 final class EnrollmentSubmitRequested extends EnrollmentEvent {
-  const EnrollmentSubmitRequested({this.name});
+  const EnrollmentSubmitRequested({
+    required this.displayName,
+    this.details,
+    this.tags,
+    this.metadata,
+  });
 
-  final String? name;
+  final String displayName;
+  final String? details;
+  final String? tags;
+  final String? metadata;
 
   @override
-  List<Object?> get props => [name];
+  List<Object?> get props => [displayName, details, tags, metadata];
 }
 
 final class EnrollmentResetRequested extends EnrollmentEvent {

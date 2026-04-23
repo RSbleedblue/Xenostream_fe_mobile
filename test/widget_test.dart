@@ -24,7 +24,7 @@ void main() {
 
     expect(find.textContaining('Capture New'), findsOneWidget);
     expect(find.text('Start Recording'), findsOneWidget);
-    expect(find.textContaining('Neural Echo'), findsOneWidget);
+    expect(find.text('How to use it'), findsOneWidget);
 
     await tester.drag(find.byType(CustomScrollView), const Offset(0, -360));
     await tester.pumpAndSettle();

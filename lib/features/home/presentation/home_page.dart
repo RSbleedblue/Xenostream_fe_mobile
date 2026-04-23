@@ -1,18 +1,27 @@
+import 'dart:async';
+
+import 'package:audio_session/audio_session.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
-import 'package:provider/provider.dart';
+import 'package:just_audio/just_audio.dart';
+
 import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_palette.dart';
 import '../../../app/theme/app_radii.dart';
 import '../../../app/theme/app_theme.dart';
 import '../../../core/api/xenostream_api_client.dart';
 import '../../../core/session/active_voice_profile_store.dart';
+import '../../voice_synthesis/data/voice_synthesis_repository.dart';
 import '../../voice_synthesis/presentation/bloc/synthesis_bloc.dart';
 import '../../voice_synthesis/presentation/bloc/synthesis_event.dart';
 import '../../voice_synthesis/presentation/bloc/synthesis_state.dart';
 
-/// Figma-aligned home: feature hero, voice carousel, quick synthesis, recent activity.
+const String kHomeVoicePreviewText =
+    "Here's a short sample of this cloned voice.";
+
+/// Figma-aligned home: feature hero, voice carousel, and quick synthesis.
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -22,17 +31,28 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final TextEditingController _scriptController = TextEditingController();
-  String _targetVoiceLabel = 'Select a voice';
 
   List<VoiceUploadResult> _apiVoices = [];
   bool _voicesLoading = true;
+  late final ActiveVoiceProfileStore _profileStore;
+
+  final AudioPlayer _homePreviewPlayer = AudioPlayer();
+  StreamSubscription<bool>? _homePreviewPlayingSub;
+  String? _loadedHomePreviewVoiceId;
+  String? _homeTtsLoadVoiceId;
 
   @override
   void initState() {
     super.initState();
+    _profileStore = context.read<ActiveVoiceProfileStore>();
     WidgetsBinding.instance.addObserver(this);
+    _homePreviewPlayingSub = _homePreviewPlayer.playingStream.listen((_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
     _fetchVoices();
-    context.read<ActiveVoiceProfileStore>().addListener(_onProfileChanged);
+    _profileStore.addListener(_onProfileChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final t = context.read<SynthesisBloc>().state.text;
@@ -52,10 +72,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   void _onProfileChanged() {
     _fetchVoices();
-    final profile = context.read<ActiveVoiceProfileStore>().profile;
+    final profile = _profileStore.profile;
     if (profile != null) {
       context.read<SynthesisBloc>().add(SynthesisVoiceSelected(profile.id));
-      setState(() => _targetVoiceLabel = profile.displayName);
     }
   }
 
@@ -68,9 +87,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _apiVoices = voices;
         _voicesLoading = false;
       });
+      final rid = _loadedHomePreviewVoiceId;
+      if (rid != null && !voices.any((e) => e.voiceId == rid)) {
+        unawaited(_stopHomePreviewPlayback());
+      }
       final bloc = context.read<SynthesisBloc>();
       if (voices.isNotEmpty && bloc.state.selectedVoiceId == null) {
         _selectVoice(voices.first);
+      } else if (voices.isEmpty) {
+        final profile = _profileStore.profile;
+        if (profile != null) {
+          bloc.add(SynthesisVoiceSelected(profile.id));
+        }
       }
     } catch (_) {
       if (!mounted) return;
@@ -79,21 +107,177 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   void _selectVoice(VoiceUploadResult voice) {
-    setState(() => _targetVoiceLabel = _displayName(voice));
     context.read<SynthesisBloc>().add(SynthesisVoiceSelected(voice.voiceId));
   }
 
+  /// Primary label: server [VoiceUploadResult.displayName], else file stem / [voiceId].
   static String _displayName(VoiceUploadResult v) {
-    final filename = v.filePath.split('/').last.split('\\').last;
-    final dotIndex = filename.lastIndexOf('.');
-    final stem = dotIndex > 0 ? filename.substring(0, dotIndex) : filename;
-    if (stem.length <= 12) return stem;
+    final name = v.displayName?.trim();
+    if (name != null && name.isNotEmpty) {
+      return name;
+    }
+    if (v.filePath.isNotEmpty) {
+      final segs = v.filePath.split(RegExp(r'[\\/]'));
+      final filename = segs.isNotEmpty ? segs.last : v.filePath;
+      final dotIndex = filename.lastIndexOf('.');
+      final stem = dotIndex > 0 ? filename.substring(0, dotIndex) : filename;
+      if (stem.length <= 12) {
+        return stem;
+      }
+    }
+    if (v.voiceId.length <= 12) {
+      return v.voiceId;
+    }
     return '${v.voiceId.substring(0, 8)}…';
   }
 
+  /// Secondary line: [details] from API, else [voiceId].
+  static String _subtitleFor(VoiceUploadResult v) {
+    final d = v.details?.trim();
+    if (d != null && d.isNotEmpty) {
+      return d;
+    }
+    return v.voiceId;
+  }
+
+  /// Label for Quick Synthesis / target row — uses API [displayName] from [_apiVoices] when available.
+  String _labelForSelectedId(String? selectedId) {
+    if (selectedId == null) {
+      return 'Select a voice';
+    }
+    for (final v in _apiVoices) {
+      if (v.voiceId == selectedId) {
+        return _displayName(v);
+      }
+    }
+    final p = _profileStore.profile;
+    if (p != null && p.id == selectedId) {
+      return p.displayName;
+    }
+    return selectedId.length > 8 ? '${selectedId.substring(0, 8)}…' : selectedId;
+  }
+
+  Future<void> _configureSessionForHomePreview() async {
+    if (kIsWeb) {
+      return;
+    }
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(
+        AudioSessionConfiguration(
+          avAudioSessionCategory: AVAudioSessionCategory.playback,
+          avAudioSessionCategoryOptions:
+              AVAudioSessionCategoryOptions.defaultToSpeaker |
+              AVAudioSessionCategoryOptions.allowBluetooth,
+          avAudioSessionMode: AVAudioSessionMode.defaultMode,
+          androidAudioAttributes: const AndroidAudioAttributes(
+            contentType: AndroidAudioContentType.speech,
+            usage: AndroidAudioUsage.media,
+          ),
+        ),
+      );
+      await session.setActive(true);
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  Future<void> _stopHomePreviewPlayback() async {
+    _homeTtsLoadVoiceId = null;
+    _loadedHomePreviewVoiceId = null;
+    try {
+      if (_homePreviewPlayer.playing) {
+        await _homePreviewPlayer.pause();
+      }
+      await _homePreviewPlayer.stop();
+    } catch (_) {
+      // ignore
+    }
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _toggleHomeVoicePreview(VoiceUploadResult v) async {
+    if (_homeTtsRequestInAir) {
+      return;
+    }
+    final id = v.voiceId;
+    if (_loadedHomePreviewVoiceId == id) {
+      if (_homePreviewPlayer.playing) {
+        await _homePreviewPlayer.pause();
+        return;
+      }
+      await _configureSessionForHomePreview();
+      if (_homePreviewPlayer.processingState == ProcessingState.completed) {
+        await _homePreviewPlayer.seek(Duration.zero);
+      }
+      try {
+        await _homePreviewPlayer.setVolume(1.0);
+        await _homePreviewPlayer.play();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Playback failed: $e')));
+        }
+      }
+      return;
+    }
+    setState(() {
+      _homeTtsLoadVoiceId = id;
+    });
+    try {
+      await _configureSessionForHomePreview();
+      try {
+        await _homePreviewPlayer.stop();
+      } catch (_) {
+        // ignore
+      }
+      if (!mounted) {
+        return;
+      }
+      final result = await context.read<VoiceSynthesisRepository>().synthesize(
+            voiceProfileId: id,
+            text: kHomeVoicePreviewText,
+          );
+      if (result.audioFilePath == null) {
+        throw StateError('Synthesis did not return a file');
+      }
+      if (!mounted) {
+        return;
+      }
+      await _homePreviewPlayer.setFilePath(result.audioFilePath!);
+      try {
+        await _homePreviewPlayer.setVolume(1.0);
+      } catch (_) {
+        // ignore
+      }
+      await _homePreviewPlayer.play();
+      _loadedHomePreviewVoiceId = id;
+    } catch (e) {
+      if (mounted) {
+        _loadedHomePreviewVoiceId = null;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Couldn't play preview: $e")),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _homeTtsLoadVoiceId = null;
+        });
+      }
+    }
+  }
+
+  bool get _homeTtsRequestInAir => _homeTtsLoadVoiceId != null;
+
   @override
   void dispose() {
-    context.read<ActiveVoiceProfileStore>().removeListener(_onProfileChanged);
+    unawaited(_homePreviewPlayingSub?.cancel());
+    unawaited(_homePreviewPlayer.dispose());
+    _profileStore.removeListener(_onProfileChanged);
     WidgetsBinding.instance.removeObserver(this);
     _scriptController.dispose();
     super.dispose();
@@ -115,7 +299,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     child: Icon(Icons.graphic_eq_rounded, color: TertiaryPalette.t600),
                   ),
                   title: Text(_displayName(v)),
-                  subtitle: Text(v.voiceId, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(
+                    _subtitleFor(v),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  isThreeLine: true,
                   onTap: () => Navigator.pop(ctx, v),
                 ),
               if (_apiVoices.isEmpty)
@@ -137,6 +326,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
+    final synthesisState = context.watch<SynthesisBloc>().state;
 
     return BlocListener<SynthesisBloc, SynthesisState>(
       listenWhen: (SynthesisState a, SynthesisState b) => a.text != b.text,
@@ -173,15 +363,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     onAction: () => context.go('/library'),
                   ),
                   const SizedBox(height: 12),
-                  BlocBuilder<SynthesisBloc, SynthesisState>(
-                    buildWhen: (a, b) => a.selectedVoiceId != b.selectedVoiceId,
-                    builder: (context, synthState) => _VoiceCarousel(
-                      voices: _apiVoices,
-                      selectedVoiceId: synthState.selectedVoiceId,
-                      loading: _voicesLoading,
-                      onRefresh: _fetchVoices,
-                      onSelect: _selectVoice,
-                    ),
+                  _VoiceCarousel(
+                    voices: _apiVoices,
+                    selectedVoiceId: synthesisState.selectedVoiceId,
+                    loading: _voicesLoading,
+                    onRefresh: _fetchVoices,
+                    onSelect: _selectVoice,
+                    onPreviewVoice: _toggleHomeVoicePreview,
+                    ttsLoadVoiceId: _homeTtsLoadVoiceId,
+                    loadedPreviewVoiceId: _loadedHomePreviewVoiceId,
+                    isPreviewPlayerPlaying: _homePreviewPlayer.playing,
+                    onBeforeDelete: (VoiceUploadResult v) {
+                      if (v.voiceId == _loadedHomePreviewVoiceId ||
+                          v.voiceId == _homeTtsLoadVoiceId) {
+                        unawaited(_stopHomePreviewPlayback());
+                      }
+                    },
                   ),
                   const SizedBox(height: 28),
                   Text(
@@ -194,59 +391,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   const SizedBox(height: 12),
                   _QuickSynthesisCard(
                     scriptController: _scriptController,
-                    targetLabel: _targetVoiceLabel,
+                    targetLabel: _labelForSelectedId(
+                      synthesisState.selectedVoiceId,
+                    ),
                     onPickVoice: () => _pickTargetVoice(context),
                     onScriptChanged: (String v) =>
                         context.read<SynthesisBloc>().add(SynthesisTextChanged(v)),
-                  ),
-                  const SizedBox(height: 28),
-                  Text(
-                    'Recent Activity',
-                    style: textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textPrimary,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  BlocBuilder<SynthesisBloc, SynthesisState>(
-                    builder: (BuildContext context, SynthesisState state) {
-                      final bloc = context.read<SynthesisBloc>();
-                      final hasAudio = state.result != null;
-                      final isPlaying = state.phase == SynthesisPhase.playing;
-                      return Column(
-                        children: [
-                          if (hasAudio)
-                            _RecentAudioTile(
-                              title: state.result!.text,
-                              subtitle: 'Your voice • just now',
-                              trailingDownload: true,
-                              leadingIsPlay: true,
-                              isPlaying: isPlaying,
-                              onPlay: () => bloc.add(const SynthesisPlayPauseToggled()),
-                              onDelete: () => bloc.add(const SynthesisResultCleared()),
-                            ),
-                          if (!hasAudio) ...[
-                            _RecentAudioTile(
-                              title: 'Podcast_Intro_v2',
-                              subtitle: 'Processing audio model…',
-                              trailingDownload: false,
-                              leadingIsPlay: false,
-                              isPlaying: false,
-                              showProgress: true,
-                              onPlay: () {},
-                            ),
-                            _RecentAudioTile(
-                              title: 'Documentary_Open',
-                              subtitle: 'Deep Narrator • 02:45 • 2 hours ago',
-                              trailingDownload: true,
-                              leadingIsPlay: true,
-                              isPlaying: false,
-                              onPlay: () => context.go('/library'),
-                            ),
-                          ],
-                        ],
-                      );
-                    },
                   ),
                 ],
               ),
@@ -330,7 +480,7 @@ class _FeatureHeroCard extends StatelessWidget {
                         Icon(Icons.auto_awesome_rounded, size: 16, color: Colors.white.withValues(alpha: 0.95)),
                         const SizedBox(width: 8),
                         Text(
-                          'New Feature: Neural Echo 2.0',
+                          'How to use it',
                           style: textTheme.labelMedium?.copyWith(
                             color: Colors.white.withValues(alpha: 0.95),
                             fontWeight: FontWeight.w600,
@@ -438,6 +588,11 @@ class _VoiceCarousel extends StatelessWidget {
     required this.loading,
     required this.onRefresh,
     required this.onSelect,
+    required this.onPreviewVoice,
+    required this.ttsLoadVoiceId,
+    required this.loadedPreviewVoiceId,
+    required this.isPreviewPlayerPlaying,
+    this.onBeforeDelete,
   });
 
   final List<VoiceUploadResult> voices;
@@ -445,6 +600,11 @@ class _VoiceCarousel extends StatelessWidget {
   final bool loading;
   final VoidCallback onRefresh;
   final ValueChanged<VoiceUploadResult> onSelect;
+  final Future<void> Function(VoiceUploadResult v) onPreviewVoice;
+  final String? ttsLoadVoiceId;
+  final String? loadedPreviewVoiceId;
+  final bool isPreviewPlayerPlaying;
+  final void Function(VoiceUploadResult v)? onBeforeDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -478,14 +638,26 @@ class _VoiceCarousel extends StatelessWidget {
         itemBuilder: (BuildContext context, int i) {
           final v = voices[i];
           final isSelected = v.voiceId == selectedVoiceId;
+          final isThisPreviewPlaying =
+              loadedPreviewVoiceId == v.voiceId && isPreviewPlayerPlaying;
+          final isThisPreviewLoading = ttsLoadVoiceId == v.voiceId;
           return GestureDetector(
             onTap: () => onSelect(v),
             child: _VoiceCloneCard(
               name: _HomePageState._displayName(v),
-              subtitle: v.voiceId,
+              subtitle: _HomePageState._subtitleFor(v),
               badge: isSelected ? 'SELECTED' : 'VOICE',
               highlight: isSelected,
-              onDelete: () => _confirmDeleteVoice(context, v),
+              onDelete: () => _confirmDeleteVoice(
+                context,
+                v,
+                onBeforeDelete: onBeforeDelete,
+              ),
+              onPreview: () {
+                unawaited(onPreviewVoice(v));
+              },
+              previewLoading: isThisPreviewLoading,
+              isPreviewPlaying: isThisPreviewPlaying,
             ),
           );
         },
@@ -493,7 +665,11 @@ class _VoiceCarousel extends StatelessWidget {
     );
   }
 
-  Future<void> _confirmDeleteVoice(BuildContext context, VoiceUploadResult voice) async {
+  Future<void> _confirmDeleteVoice(
+    BuildContext context,
+    VoiceUploadResult voice, {
+    void Function(VoiceUploadResult v)? onBeforeDelete,
+  }) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -514,7 +690,14 @@ class _VoiceCarousel extends StatelessWidget {
         ],
       ),
     );
-    if (confirmed != true || !context.mounted) return;
+    if (confirmed != true || !context.mounted) {
+      return;
+    }
+
+    onBeforeDelete?.call(voice);
+    if (!context.mounted) {
+      return;
+    }
 
     try {
       final client = context.read<XenoStreamApiClient>();
@@ -541,6 +724,9 @@ class _VoiceCloneCard extends StatelessWidget {
     required this.badge,
     required this.highlight,
     this.onDelete,
+    this.onPreview,
+    this.previewLoading = false,
+    this.isPreviewPlaying = false,
   });
 
   final String name;
@@ -548,6 +734,9 @@ class _VoiceCloneCard extends StatelessWidget {
   final String badge;
   final bool highlight;
   final VoidCallback? onDelete;
+  final VoidCallback? onPreview;
+  final bool previewLoading;
+  final bool isPreviewPlaying;
 
   @override
   Widget build(BuildContext context) {
@@ -578,6 +767,40 @@ class _VoiceCloneCard extends StatelessWidget {
             children: [
               Row(
                 children: [
+                  if (onPreview != null) ...[
+                    Semantics(
+                      label: isPreviewPlaying ? 'Pause sample' : 'Hear a sample',
+                      child: Material(
+                        color: AppColors.chipBackground,
+                        borderRadius: AppRadii.smBorder,
+                        child: InkWell(
+                          onTap: onPreview,
+                          borderRadius: AppRadii.smBorder,
+                          child: SizedBox(
+                            width: 40,
+                            height: 40,
+                            child: Center(
+                              child: previewLoading
+                                  ? const SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : Icon(
+                                      isPreviewPlaying
+                                          ? Icons.pause_rounded
+                                          : Icons.play_arrow_rounded,
+                                      color: AppColors.primaryPurple,
+                                    ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
                   Container(
                     width: 40,
                     height: 40,
@@ -859,132 +1082,6 @@ class _QuickSynthesisCard extends StatelessWidget {
               ],
             );
           },
-        ),
-      ),
-    );
-  }
-}
-
-class _RecentAudioTile extends StatelessWidget {
-  const _RecentAudioTile({
-    required this.title,
-    required this.subtitle,
-    required this.trailingDownload,
-    required this.leadingIsPlay,
-    required this.isPlaying,
-    required this.onPlay,
-    this.showProgress = false,
-    this.onDelete,
-  });
-
-  final String title;
-  final String subtitle;
-  final bool trailingDownload;
-  final bool leadingIsPlay;
-  final bool isPlaying;
-  final VoidCallback onPlay;
-  final bool showProgress;
-  final VoidCallback? onDelete;
-
-  @override
-  Widget build(BuildContext context) {
-    final textTheme = Theme.of(context).textTheme;
-    final preview = title.length > 32 ? '${title.substring(0, 32)}…' : title;
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: NeutralPalette.n100.withValues(alpha: 0.55),
-          borderRadius: AppRadii.lgBorder,
-          border: Border.all(color: NeutralPalette.n200.withValues(alpha: 0.65)),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          child: Column(
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Material(
-                    color: showProgress ? TertiaryPalette.t100 : AppColors.card,
-                    shape: const CircleBorder(),
-                    child: InkWell(
-                      customBorder: const CircleBorder(),
-                      onTap: showProgress ? null : onPlay,
-                      child: Padding(
-                        padding: const EdgeInsets.all(10),
-                        child: Icon(
-                          showProgress
-                              ? Icons.sync_rounded
-                              : (isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
-                          color: showProgress
-                              ? AppColors.textSecondary
-                              : AppColors.primaryPurple,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          preview,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          subtitle,
-                          style: textTheme.bodySmall?.copyWith(color: AppColors.textSecondary),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (trailingDownload)
-                    IconButton(
-                      onPressed: () {},
-                      icon: Icon(Icons.download_outlined, color: AppColors.textSecondary),
-                    ),
-                  PopupMenuButton<String>(
-                    icon: Icon(Icons.more_vert_rounded, color: AppColors.textSecondary),
-                    shape: RoundedRectangleBorder(borderRadius: AppRadii.mdBorder),
-                    onSelected: (value) {
-                      if (value == 'delete' && onDelete != null) onDelete!();
-                    },
-                    itemBuilder: (_) => [
-                      if (onDelete != null)
-                        const PopupMenuItem(
-                          value: 'delete',
-                          child: Row(
-                            children: [
-                              Icon(Icons.delete_outline_rounded, color: Colors.red, size: 20),
-                              SizedBox(width: 10),
-                              Text('Delete', style: TextStyle(color: Colors.red)),
-                            ],
-                          ),
-                        ),
-                    ],
-                  ),
-                ],
-              ),
-              if (showProgress) ...[
-                const SizedBox(height: 8),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(99),
-                  child: LinearProgressIndicator(
-                    minHeight: 5,
-                    value: 0.42,
-                    backgroundColor: NeutralPalette.n200,
-                    color: AppColors.primaryPurple,
-                  ),
-                ),
-              ],
-            ],
-          ),
         ),
       ),
     );

@@ -35,11 +35,8 @@ class AppShell extends StatelessWidget {
       ),
       floatingActionButton: index == _libraryBranchIndex
           ? FloatingActionButton(
-              onPressed: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('New project — coming soon')),
-                );
-              },
+              onPressed: () => context.go('/record'),
+              tooltip: 'Add a new voice',
               child: const Icon(Icons.add),
             )
           : null,

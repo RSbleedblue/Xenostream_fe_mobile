@@ -18,6 +18,7 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
         super(const SynthesisState()) {
     on<SynthesisTextChanged>(_onTextChanged);
     on<SynthesisVoiceSelected>(_onVoiceSelected);
+    on<SynthesisVoiceCleared>(_onVoiceCleared);
     on<SynthesisGenerateRequested>(_onGenerateRequested);
     on<SynthesisPlayPauseToggled>(_onPlayPauseToggled);
     on<SynthesisPlaybackEnded>(_onPlaybackEnded);
@@ -59,7 +60,14 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
     SynthesisVoiceSelected event,
     Emitter<SynthesisState> emit,
   ) {
-    emit(state.copyWith(selectedVoiceId: event.voiceId));
+    emit(state.copyWith(selectedVoiceId: event.voiceId, clearError: true));
+  }
+
+  void _onVoiceCleared(
+    SynthesisVoiceCleared event,
+    Emitter<SynthesisState> emit,
+  ) {
+    emit(state.copyWith(clearVoiceId: true, clearError: true));
   }
 
   Future<void> _onGenerateRequested(

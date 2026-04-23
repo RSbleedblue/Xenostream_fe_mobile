@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:audio_session/audio_session.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path/path.dart' as p;
@@ -69,6 +71,8 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
       return;
     }
 
+    await _configureForRecording();
+
     final tempDir = await getTemporaryDirectory();
     final filePath = p.join(
       tempDir.path,
@@ -79,7 +83,8 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
       await _recorder.start(
         const RecordConfig(
           encoder: AudioEncoder.wav,
-          sampleRate: 24000,
+          // 44.1kHz is better supported by platform decoders than 24kHz in some cases.
+          sampleRate: 44100,
           numChannels: 1,
           autoGain: true,
           noiseSuppress: true,
@@ -121,6 +126,7 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
         playbackDuration: Duration.zero,
         clearError: true,
         clearProfile: true,
+        clearPreviewError: true,
       ),
     );
   }
@@ -169,20 +175,60 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
       return;
     }
 
-    await _loadPlayback(path);
-    emit(state.copyWith(phase: EnrollmentPhase.readyToSubmit));
+    if (!kIsWeb) {
+      // Let the file finish finalizing, then switch the session to playback
+      // so preview routes to the loudspeaker (not the in-call earpiece on Android).
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    }
+
+    final loadError = await _loadPlayback(path);
+    emit(
+      state.copyWith(
+        phase: EnrollmentPhase.readyToSubmit,
+        isPlaying: false,
+        clearPreviewError: loadError == null,
+        previewError: loadError,
+      ),
+    );
   }
 
   // ---------------------------------------------------------------------------
   // Playback
   // ---------------------------------------------------------------------------
 
-  Future<void> _loadPlayback(String filePath) async {
+  Future<String?> _loadPlayback(String filePath) async {
     _cancelPlaybackSubscriptions();
+    final file = File(filePath);
     try {
-      await _player.setFilePath(filePath);
-    } catch (_) {
-      return;
+      if (!kIsWeb) {
+        if (!await file.exists()) {
+          return 'Recording file was not found.';
+        }
+        if (await file.length() < 200) {
+          return 'Recording is too short. Record a few words and try again.';
+        }
+      }
+    } catch (e) {
+      return 'Could not access the recording: $e';
+    }
+
+    try {
+      if (kIsWeb) {
+        return 'Local preview is not available on this platform.';
+      }
+      // Critical for output routing: `voiceCommunication` / record-only would keep
+      // the phone on the in-call/earpiece path, which is easy to "not hear" at all.
+      await _configureForPreviewPlayback();
+      try {
+        await _player.setFilePath(filePath);
+      } catch (e) {
+        await _player.setUrl(Uri.file(filePath, windows: false).toString());
+      }
+      try {
+        await _player.setVolume(1.0);
+      } catch (_) {}
+    } catch (e) {
+      return 'Could not open recording for preview: $e';
     }
 
     _positionSub = _player.positionStream.listen((pos) {
@@ -196,6 +242,56 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
         add(const EnrollmentPlaybackCompleted());
       }
     });
+    return null;
+  }
+
+  /// Session while the mic is open: capture + (optional) local monitoring.
+  Future<void> _configureForRecording() async {
+    if (kIsWeb) return;
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(
+        AudioSessionConfiguration(
+          avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
+          avAudioSessionCategoryOptions:
+              AVAudioSessionCategoryOptions.defaultToSpeaker |
+                  AVAudioSessionCategoryOptions.allowBluetooth,
+          avAudioSessionMode: AVAudioSessionMode.spokenAudio,
+          androidAudioAttributes: const AndroidAudioAttributes(
+            contentType: AndroidAudioContentType.speech,
+            usage: AndroidAudioUsage.voiceCommunication,
+          ),
+        ),
+      );
+      await session.setActive(true);
+    } catch (_) {
+      // If configuration fails, recording/playback may still work on some devices.
+    }
+  }
+
+  /// Session for preview: **playback** (not in-call) so the speaker/headphones get music/media routing.
+  Future<void> _configureForPreviewPlayback() async {
+    if (kIsWeb) return;
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(
+        AudioSessionConfiguration(
+          avAudioSessionCategory: AVAudioSessionCategory.playback,
+          avAudioSessionCategoryOptions:
+              AVAudioSessionCategoryOptions.defaultToSpeaker |
+                  AVAudioSessionCategoryOptions.allowBluetooth,
+          avAudioSessionMode: AVAudioSessionMode.defaultMode,
+          // `media` routes to speaker; `voiceCommunication` is often the earpiece.
+          androidAudioAttributes: const AndroidAudioAttributes(
+            contentType: AndroidAudioContentType.speech,
+            usage: AndroidAudioUsage.media,
+          ),
+        ),
+      );
+      await session.setActive(true);
+    } catch (_) {
+      // If configuration fails, try playback anyway.
+    }
   }
 
   Future<void> _onPlaybackToggled(
@@ -207,12 +303,26 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
     if (state.isPlaying) {
       await _player.pause();
       emit(state.copyWith(isPlaying: false));
-    } else {
+      return;
+    }
+
+    if (state.previewError != null) return;
+
+    try {
+      await _configureForPreviewPlayback();
       if (_player.processingState == ProcessingState.completed) {
         await _player.seek(Duration.zero);
       }
+      await _player.setVolume(1.0);
       await _player.play();
       emit(state.copyWith(isPlaying: true));
+    } catch (e) {
+      emit(
+        state.copyWith(
+          isPlaying: false,
+          previewError: 'Playback failed: $e',
+        ),
+      );
     }
   }
 
@@ -291,6 +401,9 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
     final path = state.localRecordingPath;
     if (path == null) return;
 
+    final display = event.displayName.trim();
+    if (display.isEmpty) return;
+
     await _stopPlayback();
 
     emit(
@@ -300,10 +413,19 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
       ),
     );
 
+    String? o(String? s) {
+      if (s == null) return null;
+      final t = s.trim();
+      return t.isEmpty ? null : t;
+    }
+
     try {
       final profile = await _repository.enroll(
         localAudioPath: path,
-        name: event.name,
+        displayName: display,
+        details: o(event.details),
+        tags: o(event.tags),
+        metadata: o(event.metadata),
       );
       _activeVoiceProfileStore.setProfile(profile);
       emit(
