@@ -14,13 +14,14 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
     required ActiveVoiceProfileStore activeVoiceProfileStore,
     required AudioPlayer audioPlayer,
   })  : _repository = repository,
-        _activeVoiceProfileStore = activeVoiceProfileStore,
         _audioPlayer = audioPlayer,
         super(const SynthesisState()) {
     on<SynthesisTextChanged>(_onTextChanged);
+    on<SynthesisVoiceSelected>(_onVoiceSelected);
     on<SynthesisGenerateRequested>(_onGenerateRequested);
     on<SynthesisPlayPauseToggled>(_onPlayPauseToggled);
     on<SynthesisPlaybackEnded>(_onPlaybackEnded);
+    on<SynthesisResultCleared>(_onResultCleared);
 
     _playerStateSubscription = _audioPlayer.playerStateStream.listen((playerState) {
       if (playerState.processingState == ProcessingState.completed) {
@@ -30,7 +31,6 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
   }
 
   final VoiceSynthesisRepository _repository;
-  final ActiveVoiceProfileStore _activeVoiceProfileStore;
   final AudioPlayer _audioPlayer;
 
   late final StreamSubscription<PlayerState> _playerStateSubscription;
@@ -55,18 +55,25 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
     );
   }
 
+  void _onVoiceSelected(
+    SynthesisVoiceSelected event,
+    Emitter<SynthesisState> emit,
+  ) {
+    emit(state.copyWith(selectedVoiceId: event.voiceId));
+  }
+
   Future<void> _onGenerateRequested(
     SynthesisGenerateRequested event,
     Emitter<SynthesisState> emit,
   ) async {
     if (!state.canGenerate) return;
 
-    final profile = _activeVoiceProfileStore.profile;
-    if (profile == null) {
+    final voiceId = state.selectedVoiceId;
+    if (voiceId == null) {
       emit(
         state.copyWith(
           phase: SynthesisPhase.failure,
-          errorMessage: 'Enroll and lock a voice before synthesizing.',
+          errorMessage: 'Select a voice before synthesizing.',
           clearResult: true,
         ),
       );
@@ -84,10 +91,16 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
     try {
       await _audioPlayer.stop();
       final result = await _repository.synthesize(
-        voiceProfileId: profile.id,
+        voiceProfileId: voiceId,
         text: state.text.trim(),
       );
-      await _audioPlayer.setAsset(result.audioAssetPath);
+      if (result.audioFilePath != null) {
+        await _audioPlayer.setFilePath(result.audioFilePath!);
+      } else if (result.audioAssetPath != null) {
+        await _audioPlayer.setAsset(result.audioAssetPath!);
+      } else {
+        throw StateError('SynthesisResult has no playable source');
+      }
       emit(
         state.copyWith(
           phase: SynthesisPhase.ready,
@@ -141,6 +154,17 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
   ) {
     if (state.result == null) return;
     emit(state.copyWith(phase: SynthesisPhase.ready));
+  }
+
+  Future<void> _onResultCleared(
+    SynthesisResultCleared event,
+    Emitter<SynthesisState> emit,
+  ) async {
+    if (_audioPlayer.playing) {
+      await _audioPlayer.pause();
+    }
+    await _audioPlayer.stop();
+    emit(state.copyWith(phase: SynthesisPhase.idle, clearResult: true, clearError: true));
   }
 
   @override

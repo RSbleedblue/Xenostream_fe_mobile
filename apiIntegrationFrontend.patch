@@ -1,0 +1,1725 @@
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index cdc803f..8d24848 100644
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -1,4 +1,5 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android">
++    <uses-permission android:name="android.permission.INTERNET" />
+     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+     <application
+         android:label="xenostream_fe_mobile"
+diff --git a/lib/app/xenostream_app.dart b/lib/app/xenostream_app.dart
+index 2e98677..6aa3abd 100644
+--- a/lib/app/xenostream_app.dart
++++ b/lib/app/xenostream_app.dart
+@@ -4,6 +4,8 @@ import 'package:go_router/go_router.dart';
+ import 'package:just_audio/just_audio.dart';
+ import 'package:provider/provider.dart';
+ 
++import '../core/api/api_config.dart';
++import '../core/api/xenostream_api_client.dart';
+ import '../core/session/active_voice_profile_store.dart';
+ import '../features/voice_enrollment/data/voice_enrollment_repository.dart';
+ import '../features/voice_synthesis/data/voice_synthesis_repository.dart';
+@@ -14,11 +16,15 @@ import 'theme/app_theme.dart';
+ class XenoStreamApp extends StatefulWidget {
+   const XenoStreamApp({
+     super.key,
++    required this.apiConfig,
++    required this.apiClient,
+     required this.activeVoiceProfileStore,
+     required this.voiceEnrollmentRepository,
+     required this.voiceSynthesisRepository,
+   });
+ 
++  final ApiConfig apiConfig;
++  final XenoStreamApiClient apiClient;
+   final ActiveVoiceProfileStore activeVoiceProfileStore;
+   final VoiceEnrollmentRepository voiceEnrollmentRepository;
+   final VoiceSynthesisRepository voiceSynthesisRepository;
+@@ -34,6 +40,8 @@ class _XenoStreamAppState extends State<XenoStreamApp> {
+   Widget build(BuildContext context) {
+     return MultiProvider(
+       providers: [
++        Provider<ApiConfig>.value(value: widget.apiConfig),
++        Provider<XenoStreamApiClient>.value(value: widget.apiClient),
+         ChangeNotifierProvider<ActiveVoiceProfileStore>.value(
+           value: widget.activeVoiceProfileStore,
+         ),
+diff --git a/lib/features/home/presentation/home_page.dart b/lib/features/home/presentation/home_page.dart
+index f085773..aebcebd 100644
+--- a/lib/features/home/presentation/home_page.dart
++++ b/lib/features/home/presentation/home_page.dart
+@@ -7,6 +7,7 @@ import '../../../app/theme/app_radii.dart';
+ import '../../../app/theme/app_theme.dart';
+ import '../../../core/session/active_voice_profile_store.dart';
+ import '../../../shared/domain/voice_profile.dart';
++import '../../voice_enrollment/data/voice_enrollment_repository.dart';
+ import '../../voice_synthesis/presentation/bloc/synthesis_bloc.dart';
+ import '../../voice_synthesis/presentation/bloc/synthesis_event.dart';
+ import '../../voice_synthesis/presentation/bloc/synthesis_state.dart';
+@@ -65,7 +66,7 @@ class _HomePageState extends State<HomePage> {
+                     backgroundColor: AppColors.primaryPurple.withValues(alpha: 0.15),
+                     child: const Icon(Icons.verified_rounded, color: AppColors.primaryPurple),
+                   ),
+-                  title: const Text('Your locked voice'),
++                  title: Text(profile.displayName),
+                   subtitle: Text(profile.id, maxLines: 1, overflow: TextOverflow.ellipsis),
+                   onTap: () => Navigator.pop(ctx, 'Your locked voice'),
+                 ),
+@@ -175,17 +176,18 @@ class _HomePageState extends State<HomePage> {
+                               leadingIsPlay: true,
+                               isPlaying: isPlaying,
+                               onPlay: () => bloc.add(const SynthesisPlayPauseToggled()),
++                              onDelete: () => bloc.add(const SynthesisResultCleared()),
++                            ),
++                          if (!hasAudio) ...[
++                            _RecentAudioTile(
++                              title: 'Podcast_Intro_v2',
++                              subtitle: 'Processing audio model…',
++                              trailingDownload: false,
++                              leadingIsPlay: false,
++                              isPlaying: false,
++                              showProgress: true,
++                              onPlay: () {},
+                             ),
+-                          _RecentAudioTile(
+-                            title: 'Podcast_Intro_v2',
+-                            subtitle: 'Processing audio model…',
+-                            trailingDownload: false,
+-                            leadingIsPlay: false,
+-                            isPlaying: false,
+-                            showProgress: true,
+-                            onPlay: () {},
+-                          ),
+-                          if (!hasAudio)
+                             _RecentAudioTile(
+                               title: 'Documentary_Open',
+                               subtitle: 'Deep Narrator • 02:45 • 2 hours ago',
+@@ -194,6 +196,7 @@ class _HomePageState extends State<HomePage> {
+                               isPlaying: false,
+                               onPlay: () => context.go('/library'),
+                             ),
++                          ],
+                         ],
+                       );
+                     },
+@@ -412,6 +415,7 @@ class _VoiceCarousel extends StatelessWidget {
+           subtitle: 'Studio Quality • Your clone',
+           badge: 'ACTIVE',
+           highlight: true,
++          onDelete: () => _confirmDeleteVoice(context, profile!),
+         ),
+       );
+     }
+@@ -436,6 +440,46 @@ class _VoiceCarousel extends StatelessWidget {
+       ),
+     );
+   }
++
++  Future<void> _confirmDeleteVoice(BuildContext context, VoiceProfile profile) async {
++    final confirmed = await showDialog<bool>(
++      context: context,
++      builder: (ctx) => AlertDialog(
++        title: const Text('Delete voice?'),
++        content: const Text(
++          'This will permanently remove the voice profile from the server. You can always record a new one.',
++        ),
++        actions: [
++          TextButton(
++            onPressed: () => Navigator.pop(ctx, false),
++            child: const Text('Cancel'),
++          ),
++          FilledButton(
++            style: FilledButton.styleFrom(backgroundColor: Colors.red),
++            onPressed: () => Navigator.pop(ctx, true),
++            child: const Text('Delete'),
++          ),
++        ],
++      ),
++    );
++    if (confirmed != true || !context.mounted) return;
++
++    try {
++      final repo = context.read<VoiceEnrollmentRepository>();
++      await repo.deleteVoice(voiceId: profile.id);
++      if (!context.mounted) return;
++      context.read<ActiveVoiceProfileStore>().clear();
++      ScaffoldMessenger.of(context).showSnackBar(
++        const SnackBar(content: Text('Voice profile deleted.')),
++      );
++    } catch (e) {
++      if (context.mounted) {
++        ScaffoldMessenger.of(context).showSnackBar(
++          SnackBar(content: Text('Failed to delete: $e')),
++        );
++      }
++    }
++  }
+ }
+ 
+ class _VoiceCloneCard extends StatelessWidget {
+@@ -444,12 +488,14 @@ class _VoiceCloneCard extends StatelessWidget {
+     required this.subtitle,
+     required this.badge,
+     required this.highlight,
++    this.onDelete,
+   });
+ 
+   final String name;
+   final String subtitle;
+   final String badge;
+   final bool highlight;
++  final VoidCallback? onDelete;
+ 
+   @override
+   Widget build(BuildContext context) {
+@@ -490,23 +536,50 @@ class _VoiceCloneCard extends StatelessWidget {
+                     child: const Icon(Icons.mic_rounded, color: AppColors.primaryPurple),
+                   ),
+                   const Spacer(),
+-                  DecoratedBox(
+-                    decoration: BoxDecoration(
+-                      color: TertiaryPalette.t100,
+-                      borderRadius: BorderRadius.circular(6),
++                  if (onDelete != null)
++                    SizedBox(
++                      width: 28,
++                      height: 28,
++                      child: PopupMenuButton<String>(
++                        padding: EdgeInsets.zero,
++                        iconSize: 18,
++                        icon: Icon(Icons.more_vert_rounded, color: AppColors.textSecondary, size: 18),
++                        shape: RoundedRectangleBorder(borderRadius: AppRadii.mdBorder),
++                        onSelected: (value) {
++                          if (value == 'delete') onDelete!();
++                        },
++                        itemBuilder: (_) => [
++                          const PopupMenuItem(
++                            value: 'delete',
++                            child: Row(
++                              children: [
++                                Icon(Icons.delete_outline_rounded, color: Colors.red, size: 20),
++                                SizedBox(width: 10),
++                                Text('Delete voice', style: TextStyle(color: Colors.red)),
++                              ],
++                            ),
++                          ),
++                        ],
++                      ),
+                     ),
+-                    child: Padding(
+-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+-                      child: Text(
+-                        badge,
+-                        style: textTheme.labelSmall?.copyWith(
+-                          color: TertiaryPalette.t700,
+-                          fontWeight: FontWeight.w700,
+-                          letterSpacing: 0.4,
++                  if (onDelete == null)
++                    DecoratedBox(
++                      decoration: BoxDecoration(
++                        color: TertiaryPalette.t100,
++                        borderRadius: BorderRadius.circular(6),
++                      ),
++                      child: Padding(
++                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
++                        child: Text(
++                          badge,
++                          style: textTheme.labelSmall?.copyWith(
++                            color: TertiaryPalette.t700,
++                            fontWeight: FontWeight.w700,
++                            letterSpacing: 0.4,
++                          ),
+                         ),
+                       ),
+                     ),
+-                  ),
+                 ],
+               ),
+               const Spacer(),
+@@ -627,7 +700,7 @@ class _QuickSynthesisCard extends StatelessWidget {
+                                 ),
+                                 if (profile case final VoiceProfile p)
+                                   Text(
+-                                    p.id,
++                                    p.displayName,
+                                     maxLines: 1,
+                                     overflow: TextOverflow.ellipsis,
+                                     style: textTheme.labelSmall?.copyWith(color: AppColors.textSecondary),
+@@ -764,6 +837,7 @@ class _RecentAudioTile extends StatelessWidget {
+     required this.isPlaying,
+     required this.onPlay,
+     this.showProgress = false,
++    this.onDelete,
+   });
+ 
+   final String title;
+@@ -773,6 +847,7 @@ class _RecentAudioTile extends StatelessWidget {
+   final bool isPlaying;
+   final VoidCallback onPlay;
+   final bool showProgress;
++  final VoidCallback? onDelete;
+ 
+   @override
+   Widget build(BuildContext context) {
+@@ -837,9 +912,25 @@ class _RecentAudioTile extends StatelessWidget {
+                       onPressed: () {},
+                       icon: Icon(Icons.download_outlined, color: AppColors.textSecondary),
+                     ),
+-                  IconButton(
+-                    onPressed: () {},
++                  PopupMenuButton<String>(
+                     icon: Icon(Icons.more_vert_rounded, color: AppColors.textSecondary),
++                    shape: RoundedRectangleBorder(borderRadius: AppRadii.mdBorder),
++                    onSelected: (value) {
++                      if (value == 'delete' && onDelete != null) onDelete!();
++                    },
++                    itemBuilder: (_) => [
++                      if (onDelete != null)
++                        const PopupMenuItem(
++                          value: 'delete',
++                          child: Row(
++                            children: [
++                              Icon(Icons.delete_outline_rounded, color: Colors.red, size: 20),
++                              SizedBox(width: 10),
++                              Text('Delete', style: TextStyle(color: Colors.red)),
++                            ],
++                          ),
++                        ),
++                    ],
+                   ),
+                 ],
+               ),
+diff --git a/lib/features/settings/presentation/settings_page.dart b/lib/features/settings/presentation/settings_page.dart
+index 8ed64f4..4227b1d 100644
+--- a/lib/features/settings/presentation/settings_page.dart
++++ b/lib/features/settings/presentation/settings_page.dart
+@@ -1,12 +1,91 @@
+ import 'package:flutter/material.dart';
++import 'package:provider/provider.dart';
+ 
+ import '../../../app/theme/app_colors.dart';
++import '../../../app/theme/app_radii.dart';
++import '../../../core/api/xenostream_api_client.dart';
+ 
+-class SettingsPage extends StatelessWidget {
++class SettingsPage extends StatefulWidget {
+   const SettingsPage({super.key});
+ 
++  @override
++  State<SettingsPage> createState() => _SettingsPageState();
++}
++
++class _SettingsPageState extends State<SettingsPage> {
++  late final TextEditingController _urlController;
++  late final TextEditingController _keyController;
++  bool _obscureKey = true;
++  bool _saving = false;
++  bool _dirty = false;
++
++  @override
++  void initState() {
++    super.initState();
++    final client = context.read<XenoStreamApiClient>();
++    _urlController = TextEditingController(text: client.config.baseUrl);
++    _keyController = TextEditingController(text: client.config.apiKey ?? '');
++    _urlController.addListener(_markDirty);
++    _keyController.addListener(_markDirty);
++  }
++
++  void _markDirty() {
++    final client = context.read<XenoStreamApiClient>();
++    final isDirty = _urlController.text.trim() != client.config.baseUrl ||
++        _keyController.text.trim() != (client.config.apiKey ?? '');
++    if (isDirty != _dirty) setState(() => _dirty = isDirty);
++  }
++
++  Future<void> _save() async {
++    final client = context.read<XenoStreamApiClient>();
++    final previousConfig = client.config;
++    final newConfig = previousConfig.copyWith(
++      baseUrl: _urlController.text.trim(),
++      apiKey: _keyController.text.trim(),
++    );
++    client.config = newConfig;
++    setState(() {
++      _saving = true;
++      _dirty = false;
++    });
++
++    try {
++      final ok = await client.healthz();
++      if (!mounted) return;
++      if (ok) {
++        ScaffoldMessenger.of(context).showSnackBar(
++          const SnackBar(content: Text('Connected to backend.')),
++        );
++      } else {
++        client.config = previousConfig;
++        _dirty = true;
++        ScaffoldMessenger.of(context).showSnackBar(
++          const SnackBar(content: Text('Backend unreachable. Settings reverted.')),
++        );
++      }
++    } catch (e) {
++      client.config = previousConfig;
++      if (!mounted) return;
++      setState(() => _dirty = true);
++      ScaffoldMessenger.of(context).showSnackBar(
++        SnackBar(content: Text('Connection failed — settings reverted. $e')),
++      );
++    } finally {
++      if (mounted) setState(() => _saving = false);
++    }
++  }
++
++  @override
++  void dispose() {
++    _urlController.dispose();
++    _keyController.dispose();
++    super.dispose();
++  }
++
+   @override
+   Widget build(BuildContext context) {
++    final textTheme = Theme.of(context).textTheme;
++
+     return CustomScrollView(
+       slivers: [
+         SliverPadding(
+@@ -15,25 +94,136 @@ class SettingsPage extends StatelessWidget {
+             children: [
+               Text(
+                 'SETTINGS',
+-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+-                      letterSpacing: 1.2,
+-                      color: AppColors.primaryPurple,
+-                      fontWeight: FontWeight.w600,
+-                    ),
++                style: textTheme.labelSmall?.copyWith(
++                  letterSpacing: 1.2,
++                  color: AppColors.primaryPurple,
++                  fontWeight: FontWeight.w600,
++                ),
+               ),
+               const SizedBox(height: 6),
+               Text(
+                 'Preferences',
+-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+-                      fontWeight: FontWeight.w700,
++                style: textTheme.headlineSmall
++                    ?.copyWith(fontWeight: FontWeight.w700),
++              ),
++              const SizedBox(height: 20),
++              DecoratedBox(
++                decoration: BoxDecoration(
++                  color: AppColors.card,
++                  borderRadius: AppRadii.lgBorder,
++                  boxShadow: [
++                    BoxShadow(
++                      color: Colors.black.withValues(alpha: 0.05),
++                      blurRadius: 14,
++                      offset: const Offset(0, 4),
+                     ),
++                  ],
++                ),
++                child: Padding(
++                  padding: const EdgeInsets.all(16),
++                  child: Column(
++                    crossAxisAlignment: CrossAxisAlignment.stretch,
++                    children: [
++                      Text(
++                        'Backend Connection',
++                        style: textTheme.titleMedium
++                            ?.copyWith(fontWeight: FontWeight.w700),
++                      ),
++                      const SizedBox(height: 16),
++                      Text(
++                        'BASE URL',
++                        style: textTheme.labelSmall?.copyWith(
++                          letterSpacing: 1.0,
++                          color: AppColors.textSecondary,
++                          fontWeight: FontWeight.w600,
++                        ),
++                      ),
++                      const SizedBox(height: 6),
++                      TextField(
++                        controller: _urlController,
++                        keyboardType: TextInputType.url,
++                        decoration: InputDecoration(
++                          hintText: 'http://10.0.2.2:8000',
++                          hintStyle: textTheme.bodyMedium?.copyWith(
++                            color:
++                                AppColors.textSecondary.withValues(alpha: 0.6),
++                          ),
++                          prefixIcon: const Icon(Icons.link_rounded, size: 20),
++                          border: OutlineInputBorder(
++                            borderRadius: AppRadii.mdBorder,
++                          ),
++                          contentPadding: const EdgeInsets.symmetric(
++                            horizontal: 14,
++                            vertical: 12,
++                          ),
++                        ),
++                      ),
++                      const SizedBox(height: 16),
++                      Text(
++                        'API KEY',
++                        style: textTheme.labelSmall?.copyWith(
++                          letterSpacing: 1.0,
++                          color: AppColors.textSecondary,
++                          fontWeight: FontWeight.w600,
++                        ),
++                      ),
++                      const SizedBox(height: 6),
++                      TextField(
++                        controller: _keyController,
++                        obscureText: _obscureKey,
++                        decoration: InputDecoration(
++                          hintText: 'Enter your API key',
++                          hintStyle: textTheme.bodyMedium?.copyWith(
++                            color:
++                                AppColors.textSecondary.withValues(alpha: 0.6),
++                          ),
++                          prefixIcon:
++                              const Icon(Icons.vpn_key_rounded, size: 20),
++                          suffixIcon: IconButton(
++                            icon: Icon(
++                              _obscureKey
++                                  ? Icons.visibility_off_rounded
++                                  : Icons.visibility_rounded,
++                              size: 20,
++                            ),
++                            onPressed: () =>
++                                setState(() => _obscureKey = !_obscureKey),
++                          ),
++                          border: OutlineInputBorder(
++                            borderRadius: AppRadii.mdBorder,
++                          ),
++                          contentPadding: const EdgeInsets.symmetric(
++                            horizontal: 14,
++                            vertical: 12,
++                          ),
++                        ),
++                      ),
++                      const SizedBox(height: 20),
++                      FilledButton.icon(
++                        onPressed: (_dirty && !_saving) ? _save : null,
++                        icon: _saving
++                            ? const SizedBox(
++                                width: 18,
++                                height: 18,
++                                child: CircularProgressIndicator(
++                                  strokeWidth: 2,
++                                  color: Colors.white,
++                                ),
++                              )
++                            : const Icon(Icons.save_rounded),
++                        label: Text(_saving ? 'Testing...' : 'Save & Test'),
++                      ),
++                    ],
++                  ),
++                ),
+               ),
+-              const SizedBox(height: 12),
++              const SizedBox(height: 16),
+               Text(
+-                'Account, API keys, and quality defaults will live here.',
+-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+-                      color: AppColors.textSecondary,
+-                    ),
++                'Tip: For Android emulator use http://10.0.2.2:8000. '
++                'For a physical device, use your PC\'s LAN IP.',
++                style: textTheme.bodySmall?.copyWith(
++                  color: AppColors.textSecondary,
++                ),
+               ),
+             ],
+           ),
+diff --git a/lib/features/voice_enrollment/data/fake_voice_enrollment_repository.dart b/lib/features/voice_enrollment/data/fake_voice_enrollment_repository.dart
+index bf1dabe..d442cae 100644
+--- a/lib/features/voice_enrollment/data/fake_voice_enrollment_repository.dart
++++ b/lib/features/voice_enrollment/data/fake_voice_enrollment_repository.dart
+@@ -3,11 +3,17 @@ import 'voice_enrollment_repository.dart';
+ 
+ class FakeVoiceEnrollmentRepository implements VoiceEnrollmentRepository {
+   @override
+-  Future<VoiceProfile> enroll({required String localAudioPath}) async {
++  Future<VoiceProfile> enroll({required String localAudioPath, String? name}) async {
+     await Future<void>.delayed(const Duration(milliseconds: 900));
+     return VoiceProfile(
+       id: 'voice_${DateTime.now().millisecondsSinceEpoch}',
+       createdAt: DateTime.now().toUtc(),
++      name: name,
+     );
+   }
++
++  @override
++  Future<void> deleteVoice({required String voiceId}) async {
++    await Future<void>.delayed(const Duration(milliseconds: 300));
++  }
+ }
+diff --git a/lib/features/voice_enrollment/data/voice_enrollment_repository.dart b/lib/features/voice_enrollment/data/voice_enrollment_repository.dart
+index d683229..657861c 100644
+--- a/lib/features/voice_enrollment/data/voice_enrollment_repository.dart
++++ b/lib/features/voice_enrollment/data/voice_enrollment_repository.dart
+@@ -2,5 +2,8 @@ import '../../../shared/domain/voice_profile.dart';
+ 
+ abstract class VoiceEnrollmentRepository {
+   /// Uploads or registers the local recording and returns a [VoiceProfile].
+-  Future<VoiceProfile> enroll({required String localAudioPath});
++  Future<VoiceProfile> enroll({required String localAudioPath, String? name});
++
++  /// Deletes a previously uploaded voice profile from the backend.
++  Future<void> deleteVoice({required String voiceId});
+ }
+diff --git a/lib/features/voice_enrollment/presentation/bloc/enrollment_bloc.dart b/lib/features/voice_enrollment/presentation/bloc/enrollment_bloc.dart
+index ad0bb7d..163fae4 100644
+--- a/lib/features/voice_enrollment/presentation/bloc/enrollment_bloc.dart
++++ b/lib/features/voice_enrollment/presentation/bloc/enrollment_bloc.dart
+@@ -1,6 +1,8 @@
+ import 'dart:async';
++import 'dart:io';
+ 
+ import 'package:flutter_bloc/flutter_bloc.dart';
++import 'package:just_audio/just_audio.dart';
+ import 'package:path/path.dart' as p;
+ import 'package:path_provider/path_provider.dart';
+ import 'package:permission_handler/permission_handler.dart';
+@@ -25,14 +27,24 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
+     on<EnrollmentElapsedUpdated>(_onElapsedUpdated);
+     on<EnrollmentSubmitRequested>(_onSubmitRequested);
+     on<EnrollmentResetRequested>(_onResetRequested);
++    on<EnrollmentPlaybackToggled>(_onPlaybackToggled);
++    on<EnrollmentPlaybackPositionChanged>(_onPlaybackPositionChanged);
++    on<EnrollmentPlaybackDurationChanged>(_onPlaybackDurationChanged);
++    on<EnrollmentPlaybackCompleted>(_onPlaybackCompleted);
++    on<EnrollmentPlaybackSeekRequested>(_onPlaybackSeekRequested);
++    on<EnrollmentDeleteRecordingRequested>(_onDeleteRecordingRequested);
+   }
+ 
+   final VoiceEnrollmentRepository _repository;
+   final ActiveVoiceProfileStore _activeVoiceProfileStore;
+ 
+   final AudioRecorder _recorder = AudioRecorder();
++  final AudioPlayer _player = AudioPlayer();
+   Timer? _elapsedTimer;
+   DateTime? _recordingStartedAt;
++  StreamSubscription<Duration>? _positionSub;
++  StreamSubscription<Duration?>? _durationSub;
++  StreamSubscription<PlayerState>? _playerStateSub;
+ 
+   Future<void> _onStartRequested(
+     EnrollmentStartRequested event,
+@@ -43,6 +55,8 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
+       return;
+     }
+ 
++    await _stopPlayback();
++
+     final status = await Permission.microphone.request();
+     if (!status.isGranted) {
+       emit(
+@@ -58,12 +72,19 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
+     final tempDir = await getTemporaryDirectory();
+     final filePath = p.join(
+       tempDir.path,
+-      'enrollment_${DateTime.now().millisecondsSinceEpoch}.m4a',
++      'enrollment_${DateTime.now().millisecondsSinceEpoch}.wav',
+     );
+ 
+     try {
+       await _recorder.start(
+-        const RecordConfig(encoder: AudioEncoder.aacLc),
++        const RecordConfig(
++          encoder: AudioEncoder.wav,
++          sampleRate: 24000,
++          numChannels: 1,
++          autoGain: true,
++          noiseSuppress: true,
++          echoCancel: true,
++        ),
+         path: filePath,
+       );
+     } catch (e) {
+@@ -95,6 +116,9 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
+         phase: EnrollmentPhase.recording,
+         elapsed: Duration.zero,
+         localRecordingPath: filePath,
++        isPlaying: false,
++        playbackPosition: Duration.zero,
++        playbackDuration: Duration.zero,
+         clearError: true,
+         clearProfile: true,
+       ),
+@@ -133,9 +157,7 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
+     final path = state.localRecordingPath;
+     try {
+       await _recorder.stop();
+-    } catch (_) {
+-      // ignore — still try to surface ready state if path exists
+-    }
++    } catch (_) {}
+ 
+     if (path == null || path.isEmpty) {
+       emit(
+@@ -147,9 +169,119 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
+       return;
+     }
+ 
++    await _loadPlayback(path);
+     emit(state.copyWith(phase: EnrollmentPhase.readyToSubmit));
+   }
+ 
++  // ---------------------------------------------------------------------------
++  // Playback
++  // ---------------------------------------------------------------------------
++
++  Future<void> _loadPlayback(String filePath) async {
++    _cancelPlaybackSubscriptions();
++    try {
++      await _player.setFilePath(filePath);
++    } catch (_) {
++      return;
++    }
++
++    _positionSub = _player.positionStream.listen((pos) {
++      add(EnrollmentPlaybackPositionChanged(pos));
++    });
++    _durationSub = _player.durationStream.listen((dur) {
++      if (dur != null) add(EnrollmentPlaybackDurationChanged(dur));
++    });
++    _playerStateSub = _player.playerStateStream.listen((ps) {
++      if (ps.processingState == ProcessingState.completed) {
++        add(const EnrollmentPlaybackCompleted());
++      }
++    });
++  }
++
++  Future<void> _onPlaybackToggled(
++    EnrollmentPlaybackToggled event,
++    Emitter<EnrollmentState> emit,
++  ) async {
++    if (state.phase != EnrollmentPhase.readyToSubmit) return;
++
++    if (state.isPlaying) {
++      await _player.pause();
++      emit(state.copyWith(isPlaying: false));
++    } else {
++      if (_player.processingState == ProcessingState.completed) {
++        await _player.seek(Duration.zero);
++      }
++      await _player.play();
++      emit(state.copyWith(isPlaying: true));
++    }
++  }
++
++  void _onPlaybackPositionChanged(
++    EnrollmentPlaybackPositionChanged event,
++    Emitter<EnrollmentState> emit,
++  ) {
++    emit(state.copyWith(playbackPosition: event.position));
++  }
++
++  void _onPlaybackDurationChanged(
++    EnrollmentPlaybackDurationChanged event,
++    Emitter<EnrollmentState> emit,
++  ) {
++    emit(state.copyWith(playbackDuration: event.duration));
++  }
++
++  Future<void> _onPlaybackCompleted(
++    EnrollmentPlaybackCompleted event,
++    Emitter<EnrollmentState> emit,
++  ) async {
++    emit(state.copyWith(isPlaying: false));
++  }
++
++  Future<void> _onPlaybackSeekRequested(
++    EnrollmentPlaybackSeekRequested event,
++    Emitter<EnrollmentState> emit,
++  ) async {
++    await _player.seek(event.position);
++  }
++
++  Future<void> _stopPlayback() async {
++    _cancelPlaybackSubscriptions();
++    try {
++      await _player.stop();
++    } catch (_) {}
++  }
++
++  void _cancelPlaybackSubscriptions() {
++    _positionSub?.cancel();
++    _positionSub = null;
++    _durationSub?.cancel();
++    _durationSub = null;
++    _playerStateSub?.cancel();
++    _playerStateSub = null;
++  }
++
++  // ---------------------------------------------------------------------------
++  // Delete recording
++  // ---------------------------------------------------------------------------
++
++  Future<void> _onDeleteRecordingRequested(
++    EnrollmentDeleteRecordingRequested event,
++    Emitter<EnrollmentState> emit,
++  ) async {
++    await _stopPlayback();
++    final path = state.localRecordingPath;
++    if (path != null) {
++      try {
++        await File(path).delete();
++      } catch (_) {}
++    }
++    emit(const EnrollmentState());
++  }
++
++  // ---------------------------------------------------------------------------
++  // Submit
++  // ---------------------------------------------------------------------------
++
+   Future<void> _onSubmitRequested(
+     EnrollmentSubmitRequested event,
+     Emitter<EnrollmentState> emit,
+@@ -159,6 +291,8 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
+     final path = state.localRecordingPath;
+     if (path == null) return;
+ 
++    await _stopPlayback();
++
+     emit(
+       state.copyWith(
+         phase: EnrollmentPhase.submitting,
+@@ -167,7 +301,10 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
+     );
+ 
+     try {
+-      final profile = await _repository.enroll(localAudioPath: path);
++      final profile = await _repository.enroll(
++        localAudioPath: path,
++        name: event.name,
++      );
+       _activeVoiceProfileStore.setProfile(profile);
+       emit(
+         state.copyWith(
+@@ -192,6 +329,7 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
+     _elapsedTimer?.cancel();
+     _elapsedTimer = null;
+     _recordingStartedAt = null;
++    await _stopPlayback();
+     if (await _recorder.isRecording()) {
+       await _recorder.stop();
+     }
+@@ -201,10 +339,12 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
+   @override
+   Future<void> close() async {
+     _elapsedTimer?.cancel();
++    _cancelPlaybackSubscriptions();
+     if (await _recorder.isRecording()) {
+       await _recorder.stop();
+     }
+     await _recorder.dispose();
++    await _player.dispose();
+     return super.close();
+   }
+ }
+diff --git a/lib/features/voice_enrollment/presentation/bloc/enrollment_event.dart b/lib/features/voice_enrollment/presentation/bloc/enrollment_event.dart
+index 4da2a4d..95c3ac8 100644
+--- a/lib/features/voice_enrollment/presentation/bloc/enrollment_event.dart
++++ b/lib/features/voice_enrollment/presentation/bloc/enrollment_event.dart
+@@ -29,9 +29,53 @@ final class EnrollmentElapsedUpdated extends EnrollmentEvent {
+ }
+ 
+ final class EnrollmentSubmitRequested extends EnrollmentEvent {
+-  const EnrollmentSubmitRequested();
++  const EnrollmentSubmitRequested({this.name});
++
++  final String? name;
++
++  @override
++  List<Object?> get props => [name];
+ }
+ 
+ final class EnrollmentResetRequested extends EnrollmentEvent {
+   const EnrollmentResetRequested();
+ }
++
++final class EnrollmentPlaybackToggled extends EnrollmentEvent {
++  const EnrollmentPlaybackToggled();
++}
++
++final class EnrollmentPlaybackPositionChanged extends EnrollmentEvent {
++  const EnrollmentPlaybackPositionChanged(this.position);
++
++  final Duration position;
++
++  @override
++  List<Object?> get props => [position];
++}
++
++final class EnrollmentPlaybackDurationChanged extends EnrollmentEvent {
++  const EnrollmentPlaybackDurationChanged(this.duration);
++
++  final Duration duration;
++
++  @override
++  List<Object?> get props => [duration];
++}
++
++final class EnrollmentPlaybackCompleted extends EnrollmentEvent {
++  const EnrollmentPlaybackCompleted();
++}
++
++final class EnrollmentPlaybackSeekRequested extends EnrollmentEvent {
++  const EnrollmentPlaybackSeekRequested(this.position);
++
++  final Duration position;
++
++  @override
++  List<Object?> get props => [position];
++}
++
++final class EnrollmentDeleteRecordingRequested extends EnrollmentEvent {
++  const EnrollmentDeleteRecordingRequested();
++}
+diff --git a/lib/features/voice_enrollment/presentation/bloc/enrollment_state.dart b/lib/features/voice_enrollment/presentation/bloc/enrollment_state.dart
+index 8c67297..2d8af71 100644
+--- a/lib/features/voice_enrollment/presentation/bloc/enrollment_state.dart
++++ b/lib/features/voice_enrollment/presentation/bloc/enrollment_state.dart
+@@ -18,6 +18,9 @@ final class EnrollmentState extends Equatable {
+     this.localRecordingPath,
+     this.profile,
+     this.errorMessage,
++    this.isPlaying = false,
++    this.playbackPosition = Duration.zero,
++    this.playbackDuration = Duration.zero,
+   });
+ 
+   final EnrollmentPhase phase;
+@@ -26,6 +29,10 @@ final class EnrollmentState extends Equatable {
+   final VoiceProfile? profile;
+   final String? errorMessage;
+ 
++  final bool isPlaying;
++  final Duration playbackPosition;
++  final Duration playbackDuration;
++
+   bool get canSubmit =>
+       phase == EnrollmentPhase.readyToSubmit && localRecordingPath != null;
+ 
+@@ -35,6 +42,9 @@ final class EnrollmentState extends Equatable {
+     String? localRecordingPath,
+     VoiceProfile? profile,
+     String? errorMessage,
++    bool? isPlaying,
++    Duration? playbackPosition,
++    Duration? playbackDuration,
+     bool clearRecordingPath = false,
+     bool clearError = false,
+     bool clearProfile = false,
+@@ -46,6 +56,9 @@ final class EnrollmentState extends Equatable {
+           clearRecordingPath ? null : (localRecordingPath ?? this.localRecordingPath),
+       profile: clearProfile ? null : (profile ?? this.profile),
+       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
++      isPlaying: isPlaying ?? this.isPlaying,
++      playbackPosition: playbackPosition ?? this.playbackPosition,
++      playbackDuration: playbackDuration ?? this.playbackDuration,
+     );
+   }
+ 
+@@ -56,5 +69,8 @@ final class EnrollmentState extends Equatable {
+         localRecordingPath,
+         profile,
+         errorMessage,
++        isPlaying,
++        playbackPosition,
++        playbackDuration,
+       ];
+ }
+diff --git a/lib/features/voice_enrollment/presentation/enrollment_page.dart b/lib/features/voice_enrollment/presentation/enrollment_page.dart
+index 7d7fbd0..8de259c 100644
+--- a/lib/features/voice_enrollment/presentation/enrollment_page.dart
++++ b/lib/features/voice_enrollment/presentation/enrollment_page.dart
+@@ -10,9 +10,22 @@ import 'bloc/enrollment_bloc.dart';
+ import 'bloc/enrollment_event.dart';
+ import 'bloc/enrollment_state.dart';
+ 
+-class EnrollmentPage extends StatelessWidget {
++class EnrollmentPage extends StatefulWidget {
+   const EnrollmentPage({super.key});
+ 
++  @override
++  State<EnrollmentPage> createState() => _EnrollmentPageState();
++}
++
++class _EnrollmentPageState extends State<EnrollmentPage> {
++  final _nameController = TextEditingController();
++
++  @override
++  void dispose() {
++    _nameController.dispose();
++    super.dispose();
++  }
++
+   @override
+   Widget build(BuildContext context) {
+     final textTheme = Theme.of(context).textTheme;
+@@ -40,7 +53,7 @@ class EnrollmentPage extends StatelessWidget {
+           final bloc = context.read<EnrollmentBloc>();
+           final isRecording = state.phase == EnrollmentPhase.recording;
+           final isSubmitting = state.phase == EnrollmentPhase.submitting;
+-          final canStop = isRecording;
++          final isReady = state.phase == EnrollmentPhase.readyToSubmit;
+           final progress = switch (state.phase) {
+             EnrollmentPhase.recording =>
+               state.elapsed.inMilliseconds /
+@@ -81,12 +94,15 @@ class EnrollmentPage extends StatelessWidget {
+               ),
+               const SizedBox(height: 12),
+               Text(
+-                'Speak naturally for up to two minutes. Stop when you are done, then lock your voice.',
++                'Speak naturally for up to two minutes. Stop when you are done, '
++                'preview playback, then lock your voice.',
+                 style: textTheme.bodyMedium?.copyWith(
+                   color: AppColors.textSecondary,
+                 ),
+               ),
+               const SizedBox(height: 24),
++
++              // ---- Recording progress card ----
+               DecoratedBox(
+                 decoration: BoxDecoration(
+                   color: AppColors.card,
+@@ -108,8 +124,7 @@ class EnrollmentPage extends StatelessWidget {
+                         borderRadius: AppRadii.mdBorder,
+                         child: LinearProgressIndicator(
+                           value:
+-                              (isRecording ||
+-                                  state.phase == EnrollmentPhase.readyToSubmit)
++                              (isRecording || isReady)
+                               ? progress.clamp(0, 1)
+                               : 0,
+                           minHeight: 10,
+@@ -129,6 +144,8 @@ class EnrollmentPage extends StatelessWidget {
+                 ),
+               ),
+               const SizedBox(height: 20),
++
++              // ---- Record / Stop buttons ----
+               Row(
+                 children: [
+                   Expanded(
+@@ -137,13 +154,13 @@ class EnrollmentPage extends StatelessWidget {
+                           ? null
+                           : () => bloc.add(const EnrollmentStartRequested()),
+                       icon: const Icon(Icons.fiber_manual_record),
+-                      label: const Text('Record'),
++                      label: Text(isReady ? 'Re-record' : 'Record'),
+                     ),
+                   ),
+                   const SizedBox(width: 12),
+                   Expanded(
+                     child: OutlinedButton.icon(
+-                      onPressed: canStop
++                      onPressed: isRecording
+                           ? () => bloc.add(const EnrollmentStopRequested())
+                           : null,
+                       icon: const Icon(Icons.stop_rounded),
+@@ -152,33 +169,122 @@ class EnrollmentPage extends StatelessWidget {
+                   ),
+                 ],
+               ),
+-              const SizedBox(height: 12),
+-              FilledButton.icon(
+-                onPressed: state.canSubmit && !isSubmitting
+-                    ? () => bloc.add(const EnrollmentSubmitRequested())
+-                    : null,
+-                icon: isSubmitting
+-                    ? const SizedBox(
+-                        width: 18,
+-                        height: 18,
+-                        child: CircularProgressIndicator(strokeWidth: 2),
+-                      )
+-                    : const Icon(Icons.lock_outline),
+-                label: Text(isSubmitting ? 'Locking voice…' : 'Lock voice'),
+-              ),
+-              const SizedBox(height: 8),
+-              TextButton(
+-                onPressed: isSubmitting
+-                    ? null
+-                    : () => bloc.add(const EnrollmentResetRequested()),
+-                child: const Text('Reset session'),
+-              ),
+-              if (state.phase == EnrollmentPhase.success) ...[
++
++              // ---- Playback & name section (shown after recording) ----
++              if (isReady || isSubmitting) ...[
++                const SizedBox(height: 24),
++                _PlaybackCard(state: state, bloc: bloc),
++                const SizedBox(height: 20),
++                TextField(
++                  controller: _nameController,
++                  textCapitalization: TextCapitalization.words,
++                  decoration: InputDecoration(
++                    labelText: 'Voice name',
++                    hintText: 'e.g. "My natural voice"',
++                    prefixIcon: const Icon(Icons.label_outline),
++                    border: OutlineInputBorder(
++                      borderRadius: AppRadii.mdBorder,
++                    ),
++                  ),
++                ),
++                const SizedBox(height: 16),
++                FilledButton.icon(
++                  onPressed: state.canSubmit && !isSubmitting
++                      ? () {
++                          final raw = _nameController.text.trim();
++                          bloc.add(EnrollmentSubmitRequested(
++                            name: raw.isEmpty ? null : raw,
++                          ));
++                        }
++                      : null,
++                  icon: isSubmitting
++                      ? const SizedBox(
++                          width: 18,
++                          height: 18,
++                          child: CircularProgressIndicator(strokeWidth: 2),
++                        )
++                      : const Icon(Icons.lock_outline),
++                  label: Text(isSubmitting ? 'Locking voice…' : 'Lock voice'),
++                ),
+                 const SizedBox(height: 8),
++                OutlinedButton.icon(
++                  onPressed: isSubmitting
++                      ? null
++                      : () =>
++                          bloc.add(const EnrollmentDeleteRecordingRequested()),
++                  icon: const Icon(Icons.delete_outline),
++                  label: const Text('Delete recording'),
++                  style: OutlinedButton.styleFrom(
++                    foregroundColor: Colors.redAccent,
++                    side: const BorderSide(color: Colors.redAccent),
++                  ),
++                ),
++              ],
++
++              // ---- Idle / recording phase: simpler reset ----
++              if (!isReady && !isSubmitting && state.phase != EnrollmentPhase.success) ...[
++                const SizedBox(height: 12),
++                if (state.phase != EnrollmentPhase.idle)
++                  TextButton(
++                    onPressed: () =>
++                        bloc.add(const EnrollmentResetRequested()),
++                    child: const Text('Reset session'),
++                  ),
++              ],
++
++              // ---- Success state ----
++              if (state.phase == EnrollmentPhase.success) ...[
++                const SizedBox(height: 24),
++                DecoratedBox(
++                  decoration: BoxDecoration(
++                    color: Colors.green.shade50,
++                    borderRadius: AppRadii.lgBorder,
++                    border: Border.all(color: Colors.green.shade200),
++                  ),
++                  child: Padding(
++                    padding: const EdgeInsets.all(16),
++                    child: Row(
++                      children: [
++                        Icon(Icons.check_circle, color: Colors.green.shade600),
++                        const SizedBox(width: 12),
++                        Expanded(
++                          child: Column(
++                            crossAxisAlignment: CrossAxisAlignment.start,
++                            children: [
++                              Text(
++                                'Voice locked!',
++                                style: textTheme.titleSmall?.copyWith(
++                                  fontWeight: FontWeight.w600,
++                                  color: Colors.green.shade800,
++                                ),
++                              ),
++                              if (state.profile != null)
++                                Text(
++                                  state.profile!.displayName,
++                                  style: textTheme.bodySmall?.copyWith(
++                                    color: Colors.green.shade700,
++                                  ),
++                                ),
++                            ],
++                          ),
++                        ),
++                      ],
++                    ),
++                  ),
++                ),
++                const SizedBox(height: 12),
+                 OutlinedButton(
+                   onPressed: () => context.go('/library'),
+                   child: const Text('Continue to Library'),
+                 ),
++                const SizedBox(height: 4),
++                TextButton(
++                  onPressed: () {
++                    _nameController.clear();
++                    bloc.add(const EnrollmentResetRequested());
++                  },
++                  child: const Text('Record another voice'),
++                ),
+               ],
+             ],
+           );
+@@ -187,3 +293,120 @@ class EnrollmentPage extends StatelessWidget {
+     );
+   }
+ }
++
++// -----------------------------------------------------------------------------
++// Playback card
++// -----------------------------------------------------------------------------
++
++class _PlaybackCard extends StatelessWidget {
++  const _PlaybackCard({required this.state, required this.bloc});
++
++  final EnrollmentState state;
++  final EnrollmentBloc bloc;
++
++  @override
++  Widget build(BuildContext context) {
++    final textTheme = Theme.of(context).textTheme;
++    final totalMs = state.playbackDuration.inMilliseconds;
++    final posMs = state.playbackPosition.inMilliseconds;
++    final sliderMax = totalMs > 0 ? totalMs.toDouble() : 1.0;
++
++    return DecoratedBox(
++      decoration: BoxDecoration(
++        color: AppColors.card,
++        borderRadius: AppRadii.xlBorder,
++        boxShadow: [
++          BoxShadow(
++            color: Colors.black.withValues(alpha: 0.06),
++            blurRadius: 20,
++            offset: const Offset(0, 8),
++          ),
++        ],
++      ),
++      child: Padding(
++        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
++        child: Column(
++          children: [
++            Row(
++              children: [
++                Icon(
++                  Icons.headphones_rounded,
++                  color: AppColors.primaryPurple,
++                  size: 20,
++                ),
++                const SizedBox(width: 8),
++                Text(
++                  'Preview recording',
++                  style: textTheme.titleSmall?.copyWith(
++                    fontWeight: FontWeight.w600,
++                  ),
++                ),
++              ],
++            ),
++            const SizedBox(height: 8),
++            Row(
++              children: [
++                IconButton(
++                  onPressed: state.phase == EnrollmentPhase.readyToSubmit
++                      ? () => bloc.add(const EnrollmentPlaybackToggled())
++                      : null,
++                  icon: Icon(
++                    state.isPlaying
++                        ? Icons.pause_circle_filled
++                        : Icons.play_circle_filled,
++                  ),
++                  iconSize: 40,
++                  color: AppColors.primaryPurple,
++                  padding: EdgeInsets.zero,
++                ),
++                Expanded(
++                  child: SliderTheme(
++                    data: SliderTheme.of(context).copyWith(
++                      trackHeight: 4,
++                      thumbShape:
++                          const RoundSliderThumbShape(enabledThumbRadius: 7),
++                      overlayShape:
++                          const RoundSliderOverlayShape(overlayRadius: 14),
++                      activeTrackColor: AppColors.primaryPurple,
++                      inactiveTrackColor: AppColors.chipBackground,
++                      thumbColor: AppColors.primaryPurple,
++                    ),
++                    child: Slider(
++                      value: posMs.toDouble().clamp(0, sliderMax),
++                      max: sliderMax,
++                      onChanged: (v) => bloc.add(
++                        EnrollmentPlaybackSeekRequested(
++                          Duration(milliseconds: v.round()),
++                        ),
++                      ),
++                    ),
++                  ),
++                ),
++              ],
++            ),
++            Padding(
++              padding: const EdgeInsets.symmetric(horizontal: 12),
++              child: Row(
++                mainAxisAlignment: MainAxisAlignment.spaceBetween,
++                children: [
++                  Text(
++                    formatDurationMmSs(state.playbackPosition),
++                    style: textTheme.bodySmall?.copyWith(
++                      color: AppColors.textSecondary,
++                    ),
++                  ),
++                  Text(
++                    formatDurationMmSs(state.playbackDuration),
++                    style: textTheme.bodySmall?.copyWith(
++                      color: AppColors.textSecondary,
++                    ),
++                  ),
++                ],
++              ),
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++}
+diff --git a/lib/features/voice_synthesis/data/fake_voice_synthesis_repository.dart b/lib/features/voice_synthesis/data/fake_voice_synthesis_repository.dart
+index 25a8c41..6482ac2 100644
+--- a/lib/features/voice_synthesis/data/fake_voice_synthesis_repository.dart
++++ b/lib/features/voice_synthesis/data/fake_voice_synthesis_repository.dart
+@@ -1,7 +1,7 @@
+ import '../domain/synthesis_result.dart';
+ import 'voice_synthesis_repository.dart';
+ 
+-/// Returns a bundled asset so playback works offline until the real API exists.
++/// Returns a bundled asset so playback works offline when the backend is down.
+ class FakeVoiceSynthesisRepository implements VoiceSynthesisRepository {
+   static const String placeholderAsset = 'assets/audio/placeholder.wav';
+ 
+diff --git a/lib/features/voice_synthesis/domain/synthesis_result.dart b/lib/features/voice_synthesis/domain/synthesis_result.dart
+index cb63aaf..bef3a76 100644
+--- a/lib/features/voice_synthesis/domain/synthesis_result.dart
++++ b/lib/features/voice_synthesis/domain/synthesis_result.dart
+@@ -1,18 +1,30 @@
+ import 'package:equatable/equatable.dart';
+ 
+-/// Outcome of a synthesis request (local asset path or file URL from API).
++/// Outcome of a synthesis request.
++///
++/// Exactly one of [audioAssetPath] (bundled asset, dev/offline) or
++/// [audioFilePath] (local file written after the API returned WAV bytes)
++/// is populated.
+ class SynthesisResult extends Equatable {
+   const SynthesisResult({
+     required this.voiceProfileId,
+     required this.text,
+-    required this.audioAssetPath,
+-  });
++    this.audioAssetPath,
++    this.audioFilePath,
++  }) : assert(
++          (audioAssetPath == null) != (audioFilePath == null),
++          'Provide exactly one of audioAssetPath or audioFilePath',
++        );
+ 
+   final String voiceProfileId;
+   final String text;
+-  /// Path usable with [just_audio] `setAsset`, e.g. `assets/audio/placeholder.wav`.
+-  final String audioAssetPath;
++
++  /// Bundled asset path (e.g. `assets/audio/placeholder.wav`) for the fake repo.
++  final String? audioAssetPath;
++
++  /// Absolute path to a locally-cached WAV returned by the backend.
++  final String? audioFilePath;
+ 
+   @override
+-  List<Object?> get props => [voiceProfileId, text, audioAssetPath];
++  List<Object?> get props => [voiceProfileId, text, audioAssetPath, audioFilePath];
+ }
+diff --git a/lib/features/voice_synthesis/presentation/bloc/synthesis_bloc.dart b/lib/features/voice_synthesis/presentation/bloc/synthesis_bloc.dart
+index 364b1e8..9758e0a 100644
+--- a/lib/features/voice_synthesis/presentation/bloc/synthesis_bloc.dart
++++ b/lib/features/voice_synthesis/presentation/bloc/synthesis_bloc.dart
+@@ -21,6 +21,7 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
+     on<SynthesisGenerateRequested>(_onGenerateRequested);
+     on<SynthesisPlayPauseToggled>(_onPlayPauseToggled);
+     on<SynthesisPlaybackEnded>(_onPlaybackEnded);
++    on<SynthesisResultCleared>(_onResultCleared);
+ 
+     _playerStateSubscription = _audioPlayer.playerStateStream.listen((playerState) {
+       if (playerState.processingState == ProcessingState.completed) {
+@@ -87,7 +88,13 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
+         voiceProfileId: profile.id,
+         text: state.text.trim(),
+       );
+-      await _audioPlayer.setAsset(result.audioAssetPath);
++      if (result.audioFilePath != null) {
++        await _audioPlayer.setFilePath(result.audioFilePath!);
++      } else if (result.audioAssetPath != null) {
++        await _audioPlayer.setAsset(result.audioAssetPath!);
++      } else {
++        throw StateError('SynthesisResult has no playable source');
++      }
+       emit(
+         state.copyWith(
+           phase: SynthesisPhase.ready,
+@@ -143,6 +150,17 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
+     emit(state.copyWith(phase: SynthesisPhase.ready));
+   }
+ 
++  Future<void> _onResultCleared(
++    SynthesisResultCleared event,
++    Emitter<SynthesisState> emit,
++  ) async {
++    if (_audioPlayer.playing) {
++      await _audioPlayer.pause();
++    }
++    await _audioPlayer.stop();
++    emit(state.copyWith(phase: SynthesisPhase.idle, clearResult: true, clearError: true));
++  }
++
+   @override
+   Future<void> close() async {
+     await _playerStateSubscription.cancel();
+diff --git a/lib/features/voice_synthesis/presentation/bloc/synthesis_event.dart b/lib/features/voice_synthesis/presentation/bloc/synthesis_event.dart
+index c23618a..a7b39fc 100644
+--- a/lib/features/voice_synthesis/presentation/bloc/synthesis_event.dart
++++ b/lib/features/voice_synthesis/presentation/bloc/synthesis_event.dart
+@@ -27,3 +27,7 @@ final class SynthesisPlayPauseToggled extends SynthesisEvent {
+ final class SynthesisPlaybackEnded extends SynthesisEvent {
+   const SynthesisPlaybackEnded();
+ }
++
++final class SynthesisResultCleared extends SynthesisEvent {
++  const SynthesisResultCleared();
++}
+diff --git a/lib/features/voice_synthesis/presentation/synthesis_page.dart b/lib/features/voice_synthesis/presentation/synthesis_page.dart
+index c7954fc..7fde285 100644
+--- a/lib/features/voice_synthesis/presentation/synthesis_page.dart
++++ b/lib/features/voice_synthesis/presentation/synthesis_page.dart
+@@ -7,6 +7,7 @@ import '../../../app/theme/app_colors.dart';
+ import '../../../app/theme/app_radii.dart';
+ import '../../../app/theme/app_theme.dart';
+ import '../../../core/session/active_voice_profile_store.dart';
++import '../../voice_enrollment/data/voice_enrollment_repository.dart';
+ import 'bloc/synthesis_bloc.dart';
+ import 'bloc/synthesis_event.dart';
+ import 'bloc/synthesis_state.dart';
+@@ -234,10 +235,9 @@ class _SynthesisPageState extends State<SynthesisPage> {
+                                     ],
+                                   ),
+                                 ),
+-                                Icon(
+-                                  Icons.circle,
+-                                  size: 10,
+-                                  color: AppColors.primaryPurple,
++                                _VoiceProfileMenu(
++                                  voiceId: profile.id,
++                                  store: store,
+                                 ),
+                               ],
+                             ),
+@@ -377,6 +377,7 @@ class _SynthesisPageState extends State<SynthesisPage> {
+                   subtitle: 'Preview clip • just now',
+                   onPlay: () => bloc.add(const SynthesisPlayPauseToggled()),
+                   isPlaying: isPlaying,
++                  onDelete: () => bloc.add(const SynthesisResultCleared()),
+                 )
+               else
+                 Padding(
+@@ -589,12 +590,14 @@ class _RecentTile extends StatelessWidget {
+     required this.subtitle,
+     required this.onPlay,
+     required this.isPlaying,
++    this.onDelete,
+   });
+ 
+   final String title;
+   final String subtitle;
+   final VoidCallback onPlay;
+   final bool isPlaying;
++  final VoidCallback? onDelete;
+ 
+   @override
+   Widget build(BuildContext context) {
+@@ -633,11 +636,103 @@ class _RecentTile extends StatelessWidget {
+           subtitle,
+           style: textTheme.bodySmall?.copyWith(color: AppColors.textSecondary),
+         ),
+-        trailing: Text(
+-          'Today',
+-          style: textTheme.labelSmall?.copyWith(color: AppColors.textSecondary),
++        trailing: PopupMenuButton<String>(
++          icon: Icon(Icons.more_vert_rounded, color: AppColors.textSecondary),
++          shape: RoundedRectangleBorder(borderRadius: AppRadii.mdBorder),
++          onSelected: (value) {
++            if (value == 'delete' && onDelete != null) onDelete!();
++          },
++          itemBuilder: (_) => [
++            if (onDelete != null)
++              const PopupMenuItem(
++                value: 'delete',
++                child: Row(
++                  children: [
++                    Icon(Icons.delete_outline_rounded, color: Colors.red, size: 20),
++                    SizedBox(width: 10),
++                    Text('Delete', style: TextStyle(color: Colors.red)),
++                  ],
++                ),
++              ),
++          ],
++        ),
++      ),
++    );
++  }
++}
++
++class _VoiceProfileMenu extends StatelessWidget {
++  const _VoiceProfileMenu({
++    required this.voiceId,
++    required this.store,
++  });
++
++  final String voiceId;
++  final ActiveVoiceProfileStore store;
++
++  @override
++  Widget build(BuildContext context) {
++    return PopupMenuButton<String>(
++      icon: Icon(Icons.more_vert_rounded, color: AppColors.textSecondary),
++      shape: RoundedRectangleBorder(borderRadius: AppRadii.mdBorder),
++      onSelected: (value) {
++        if (value == 'delete') {
++          _confirmDelete(context);
++        }
++      },
++      itemBuilder: (_) => [
++        const PopupMenuItem(
++          value: 'delete',
++          child: Row(
++            children: [
++              Icon(Icons.delete_outline_rounded, color: Colors.red, size: 20),
++              SizedBox(width: 10),
++              Text('Delete voice', style: TextStyle(color: Colors.red)),
++            ],
++          ),
++        ),
++      ],
++    );
++  }
++
++  Future<void> _confirmDelete(BuildContext context) async {
++    final confirmed = await showDialog<bool>(
++      context: context,
++      builder: (ctx) => AlertDialog(
++        title: const Text('Delete voice?'),
++        content: const Text(
++          'This will permanently remove the voice profile from the server. You can always record a new one.',
+         ),
++        actions: [
++          TextButton(
++            onPressed: () => Navigator.pop(ctx, false),
++            child: const Text('Cancel'),
++          ),
++          FilledButton(
++            style: FilledButton.styleFrom(backgroundColor: Colors.red),
++            onPressed: () => Navigator.pop(ctx, true),
++            child: const Text('Delete'),
++          ),
++        ],
+       ),
+     );
++    if (confirmed != true || !context.mounted) return;
++
++    try {
++      final repo = context.read<VoiceEnrollmentRepository>();
++      await repo.deleteVoice(voiceId: voiceId);
++      store.clear();
++      if (context.mounted) {
++        ScaffoldMessenger.of(context).showSnackBar(
++          const SnackBar(content: Text('Voice profile deleted.')),
++        );
++      }
++    } catch (e) {
++      if (context.mounted) {
++        ScaffoldMessenger.of(context).showSnackBar(
++          SnackBar(content: Text('Failed to delete: $e')),
++        );
++      }
++    }
+   }
+ }
+diff --git a/lib/main.dart b/lib/main.dart
+index 195a19c..3da03ff 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -1,19 +1,28 @@
+ import 'package:flutter/material.dart';
+ 
+ import 'app/xenostream_app.dart';
++import 'core/api/api_config.dart';
++import 'core/api/xenostream_api_client.dart';
+ import 'core/session/active_voice_profile_store.dart';
+-import 'features/voice_enrollment/data/fake_voice_enrollment_repository.dart';
+-import 'features/voice_synthesis/data/fake_voice_synthesis_repository.dart';
++import 'features/voice_enrollment/data/api_voice_enrollment_repository.dart';
++import 'features/voice_synthesis/data/api_voice_synthesis_repository.dart';
+ 
+ void main() {
+   WidgetsFlutterBinding.ensureInitialized();
+ 
++  final apiConfig = ApiConfig.defaults();
++  final apiClient = XenoStreamApiClient(config: apiConfig);
++
+   final activeVoiceProfileStore = ActiveVoiceProfileStore();
+-  final voiceEnrollmentRepository = FakeVoiceEnrollmentRepository();
+-  final voiceSynthesisRepository = FakeVoiceSynthesisRepository();
++  final voiceEnrollmentRepository =
++      ApiVoiceEnrollmentRepository(client: apiClient);
++  final voiceSynthesisRepository =
++      ApiVoiceSynthesisRepository(client: apiClient);
+ 
+   runApp(
+     XenoStreamApp(
++      apiConfig: apiConfig,
++      apiClient: apiClient,
+       activeVoiceProfileStore: activeVoiceProfileStore,
+       voiceEnrollmentRepository: voiceEnrollmentRepository,
+       voiceSynthesisRepository: voiceSynthesisRepository,
+diff --git a/lib/shared/domain/voice_profile.dart b/lib/shared/domain/voice_profile.dart
+index 8c16ced..14754b4 100644
+--- a/lib/shared/domain/voice_profile.dart
++++ b/lib/shared/domain/voice_profile.dart
+@@ -5,11 +5,21 @@ class VoiceProfile extends Equatable {
+   const VoiceProfile({
+     required this.id,
+     required this.createdAt,
++    this.name,
+   });
+ 
+   final String id;
+   final DateTime createdAt;
++  final String? name;
++
++  String get displayName => name ?? id;
++
++  VoiceProfile copyWith({String? name}) => VoiceProfile(
++        id: id,
++        createdAt: createdAt,
++        name: name ?? this.name,
++      );
+ 
+   @override
+-  List<Object?> get props => [id, createdAt];
++  List<Object?> get props => [id, createdAt, name];
+ }
+diff --git a/pubspec.lock b/pubspec.lock
+index c0ba44e..9e9b22b 100644
+--- a/pubspec.lock
++++ b/pubspec.lock
+@@ -61,10 +61,10 @@ packages:
+     dependency: transitive
+     description:
+       name: characters
+-      sha256: f71061c654a3380576a52b451dd5532377954cf9dbd272a78fc8479606670803
++      sha256: faf38497bda5ead2a8c7615f4f7939df04333478bf32e4173fcb06d428b5716b
+       url: "https://pub.dev"
+     source: hosted
+-    version: "1.4.0"
++    version: "1.4.1"
+   checked_yaml:
+     dependency: transitive
+     description:
+@@ -257,7 +257,7 @@ packages:
+     source: hosted
+     version: "0.15.6"
+   http:
+-    dependency: transitive
++    dependency: "direct main"
+     description:
+       name: http
+       sha256: "87721a4a50b19c7f1d49001e51409bddc46303966ce89a65af4f4e6004896412"
+@@ -372,18 +372,18 @@ packages:
+     dependency: transitive
+     description:
+       name: matcher
+-      sha256: dc58c723c3c24bf8d3e2d3ad3f2f9d7bd9cf43ec6feaa64181775e60190153f2
++      sha256: dc0b7dc7651697ea4ff3e69ef44b0407ea32c487a39fff6a4004fa585e901861
+       url: "https://pub.dev"
+     source: hosted
+-    version: "0.12.17"
++    version: "0.12.19"
+   material_color_utilities:
+     dependency: transitive
+     description:
+       name: material_color_utilities
+-      sha256: f7142bb1154231d7ea5f96bc7bde4bda2a0945d2806bb11670e30b850d56bdec
++      sha256: "9c337007e82b1889149c82ed242ed1cb24a66044e30979c44912381e9be4c48b"
+       url: "https://pub.dev"
+     source: hosted
+-    version: "0.11.1"
++    version: "0.13.0"
+   meta:
+     dependency: transitive
+     description:
+@@ -705,10 +705,10 @@ packages:
+     dependency: transitive
+     description:
+       name: test_api
+-      sha256: ab2726c1a94d3176a45960b6234466ec367179b87dd74f1611adb1f3b5fb9d55
++      sha256: "8161c84903fd860b26bfdefb7963b3f0b68fee7adea0f59ef805ecca346f0c7a"
+       url: "https://pub.dev"
+     source: hosted
+-    version: "0.7.7"
++    version: "0.7.10"
+   typed_data:
+     dependency: transitive
+     description:
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 66c6e61..829c1b2 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -21,6 +21,7 @@ dependencies:
+   path_provider: ^2.1.5
+   path: ^1.9.1
+   google_fonts: ^6.2.1
++  http: ^1.2.2
+ 
+ dev_dependencies:
+   flutter_test:
+diff --git a/test/widget_test.dart b/test/widget_test.dart
+index 8b4e887..bfa7623 100644
+--- a/test/widget_test.dart
++++ b/test/widget_test.dart
+@@ -2,14 +2,19 @@ import 'package:flutter/material.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ 
+ import 'package:xenostream_fe_mobile/app/xenostream_app.dart';
++import 'package:xenostream_fe_mobile/core/api/api_config.dart';
++import 'package:xenostream_fe_mobile/core/api/xenostream_api_client.dart';
+ import 'package:xenostream_fe_mobile/core/session/active_voice_profile_store.dart';
+ import 'package:xenostream_fe_mobile/features/voice_enrollment/data/fake_voice_enrollment_repository.dart';
+ import 'package:xenostream_fe_mobile/features/voice_synthesis/data/fake_voice_synthesis_repository.dart';
+ 
+ void main() {
+   testWidgets('Home hub renders', (WidgetTester tester) async {
++    const config = ApiConfig(baseUrl: 'http://localhost:8000');
+     await tester.pumpWidget(
+       XenoStreamApp(
++        apiConfig: config,
++        apiClient: XenoStreamApiClient(config: config),
+         activeVoiceProfileStore: ActiveVoiceProfileStore(),
+         voiceEnrollmentRepository: FakeVoiceEnrollmentRepository(),
+         voiceSynthesisRepository: FakeVoiceSynthesisRepository(),

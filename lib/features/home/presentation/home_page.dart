@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
+import 'package:provider/provider.dart';
 import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_palette.dart';
 import '../../../app/theme/app_radii.dart';
 import '../../../app/theme/app_theme.dart';
+import '../../../core/api/xenostream_api_client.dart';
 import '../../../core/session/active_voice_profile_store.dart';
-import '../../../shared/domain/voice_profile.dart';
 import '../../voice_synthesis/presentation/bloc/synthesis_bloc.dart';
 import '../../voice_synthesis/presentation/bloc/synthesis_event.dart';
 import '../../voice_synthesis/presentation/bloc/synthesis_state.dart';
@@ -19,19 +20,19 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final TextEditingController _scriptController = TextEditingController();
-  String _targetVoiceLabel = 'Sarah Jenkins';
+  String _targetVoiceLabel = 'Select a voice';
 
-  static const List<_DemoVoice> _demoVoices = <_DemoVoice>[
-    _DemoVoice(name: 'Sarah Jenkins', subtitle: 'Studio Quality • Calm & Warm', badge: 'STUDIO'),
-    _DemoVoice(name: 'Deep Narrator', subtitle: 'Documentary • Rich lows', badge: 'STUDIO'),
-    _DemoVoice(name: 'Aurora Lite', subtitle: 'Social • Bright', badge: 'LITE'),
-  ];
+  List<VoiceUploadResult> _apiVoices = [];
+  bool _voicesLoading = true;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _fetchVoices();
+    context.read<ActiveVoiceProfileStore>().addListener(_onProfileChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final t = context.read<SynthesisBloc>().state.text;
@@ -45,13 +46,61 @@ class _HomePageState extends State<HomePage> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _fetchVoices();
+  }
+
+  void _onProfileChanged() {
+    _fetchVoices();
+    final profile = context.read<ActiveVoiceProfileStore>().profile;
+    if (profile != null) {
+      context.read<SynthesisBloc>().add(SynthesisVoiceSelected(profile.id));
+      setState(() => _targetVoiceLabel = profile.displayName);
+    }
+  }
+
+  Future<void> _fetchVoices() async {
+    try {
+      final client = context.read<XenoStreamApiClient>();
+      final voices = await client.listVoices();
+      if (!mounted) return;
+      setState(() {
+        _apiVoices = voices;
+        _voicesLoading = false;
+      });
+      final bloc = context.read<SynthesisBloc>();
+      if (voices.isNotEmpty && bloc.state.selectedVoiceId == null) {
+        _selectVoice(voices.first);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _voicesLoading = false);
+    }
+  }
+
+  void _selectVoice(VoiceUploadResult voice) {
+    setState(() => _targetVoiceLabel = _displayName(voice));
+    context.read<SynthesisBloc>().add(SynthesisVoiceSelected(voice.voiceId));
+  }
+
+  static String _displayName(VoiceUploadResult v) {
+    final filename = v.filePath.split('/').last.split('\\').last;
+    final dotIndex = filename.lastIndexOf('.');
+    final stem = dotIndex > 0 ? filename.substring(0, dotIndex) : filename;
+    if (stem.length <= 12) return stem;
+    return '${v.voiceId.substring(0, 8)}…';
+  }
+
+  @override
   void dispose() {
+    context.read<ActiveVoiceProfileStore>().removeListener(_onProfileChanged);
+    WidgetsBinding.instance.removeObserver(this);
     _scriptController.dispose();
     super.dispose();
   }
 
-  Future<void> _pickTargetVoice(BuildContext context, VoiceProfile? profile) async {
-    final choice = await showModalBottomSheet<String>(
+  Future<void> _pickTargetVoice(BuildContext context) async {
+    final choice = await showModalBottomSheet<VoiceUploadResult>(
       context: context,
       showDragHandle: true,
       builder: (BuildContext ctx) {
@@ -59,25 +108,21 @@ class _HomePageState extends State<HomePage> {
           child: ListView(
             shrinkWrap: true,
             children: [
-              if (profile != null)
-                ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor: AppColors.primaryPurple.withValues(alpha: 0.15),
-                    child: const Icon(Icons.verified_rounded, color: AppColors.primaryPurple),
-                  ),
-                  title: const Text('Your locked voice'),
-                  subtitle: Text(profile.id, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  onTap: () => Navigator.pop(ctx, 'Your locked voice'),
-                ),
-              for (final v in _demoVoices)
+              for (final v in _apiVoices)
                 ListTile(
                   leading: CircleAvatar(
                     backgroundColor: TertiaryPalette.t100,
                     child: Icon(Icons.graphic_eq_rounded, color: TertiaryPalette.t600),
                   ),
-                  title: Text(v.name),
-                  subtitle: Text(v.subtitle),
-                  onTap: () => Navigator.pop(ctx, v.name),
+                  title: Text(_displayName(v)),
+                  subtitle: Text(v.voiceId, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  onTap: () => Navigator.pop(ctx, v),
+                ),
+              if (_apiVoices.isEmpty)
+                const ListTile(
+                  leading: Icon(Icons.info_outline_rounded),
+                  title: Text('No voices available'),
+                  subtitle: Text('Record or upload a voice first.'),
                 ),
             ],
           ),
@@ -85,14 +130,12 @@ class _HomePageState extends State<HomePage> {
       },
     );
     if (choice != null && mounted) {
-      setState(() => _targetVoiceLabel = choice);
+      _selectVoice(choice);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final store = context.watch<ActiveVoiceProfileStore>();
-    final profile = store.profile;
     final textTheme = Theme.of(context).textTheme;
 
     return BlocListener<SynthesisBloc, SynthesisState>(
@@ -130,9 +173,15 @@ class _HomePageState extends State<HomePage> {
                     onAction: () => context.go('/library'),
                   ),
                   const SizedBox(height: 12),
-                  _VoiceCarousel(
-                    profile: profile,
-                    demos: _demoVoices,
+                  BlocBuilder<SynthesisBloc, SynthesisState>(
+                    buildWhen: (a, b) => a.selectedVoiceId != b.selectedVoiceId,
+                    builder: (context, synthState) => _VoiceCarousel(
+                      voices: _apiVoices,
+                      selectedVoiceId: synthState.selectedVoiceId,
+                      loading: _voicesLoading,
+                      onRefresh: _fetchVoices,
+                      onSelect: _selectVoice,
+                    ),
                   ),
                   const SizedBox(height: 28),
                   Text(
@@ -146,8 +195,7 @@ class _HomePageState extends State<HomePage> {
                   _QuickSynthesisCard(
                     scriptController: _scriptController,
                     targetLabel: _targetVoiceLabel,
-                    profile: profile,
-                    onPickVoice: () => _pickTargetVoice(context, profile),
+                    onPickVoice: () => _pickTargetVoice(context),
                     onScriptChanged: (String v) =>
                         context.read<SynthesisBloc>().add(SynthesisTextChanged(v)),
                   ),
@@ -175,17 +223,18 @@ class _HomePageState extends State<HomePage> {
                               leadingIsPlay: true,
                               isPlaying: isPlaying,
                               onPlay: () => bloc.add(const SynthesisPlayPauseToggled()),
+                              onDelete: () => bloc.add(const SynthesisResultCleared()),
                             ),
-                          _RecentAudioTile(
-                            title: 'Podcast_Intro_v2',
-                            subtitle: 'Processing audio model…',
-                            trailingDownload: false,
-                            leadingIsPlay: false,
-                            isPlaying: false,
-                            showProgress: true,
-                            onPlay: () {},
-                          ),
-                          if (!hasAudio)
+                          if (!hasAudio) ...[
+                            _RecentAudioTile(
+                              title: 'Podcast_Intro_v2',
+                              subtitle: 'Processing audio model…',
+                              trailingDownload: false,
+                              leadingIsPlay: false,
+                              isPlaying: false,
+                              showProgress: true,
+                              onPlay: () {},
+                            ),
                             _RecentAudioTile(
                               title: 'Documentary_Open',
                               subtitle: 'Deep Narrator • 02:45 • 2 hours ago',
@@ -194,6 +243,7 @@ class _HomePageState extends State<HomePage> {
                               isPlaying: false,
                               onPlay: () => context.go('/library'),
                             ),
+                          ],
                         ],
                       );
                     },
@@ -206,18 +256,6 @@ class _HomePageState extends State<HomePage> {
       ),
     );
   }
-}
-
-class _DemoVoice {
-  const _DemoVoice({
-    required this.name,
-    required this.subtitle,
-    required this.badge,
-  });
-
-  final String name;
-  final String subtitle;
-  final String badge;
 }
 
 class _FeatureHeroCard extends StatelessWidget {
@@ -395,33 +433,38 @@ class _SectionTitleRow extends StatelessWidget {
 
 class _VoiceCarousel extends StatelessWidget {
   const _VoiceCarousel({
-    required this.profile,
-    required this.demos,
+    required this.voices,
+    required this.selectedVoiceId,
+    required this.loading,
+    required this.onRefresh,
+    required this.onSelect,
   });
 
-  final VoiceProfile? profile;
-  final List<_DemoVoice> demos;
+  final List<VoiceUploadResult> voices;
+  final String? selectedVoiceId;
+  final bool loading;
+  final VoidCallback onRefresh;
+  final ValueChanged<VoiceUploadResult> onSelect;
 
   @override
   Widget build(BuildContext context) {
-    final cards = <Widget>[];
-    if (profile != null) {
-      cards.add(
-        _VoiceCloneCard(
-          name: 'Your locked voice',
-          subtitle: 'Studio Quality • Your clone',
-          badge: 'ACTIVE',
-          highlight: true,
-        ),
+    if (loading) {
+      return const SizedBox(
+        height: 152,
+        child: Center(child: CircularProgressIndicator()),
       );
     }
-    for (final d in demos) {
-      cards.add(
-        _VoiceCloneCard(
-          name: d.name,
-          subtitle: d.subtitle,
-          badge: d.badge,
-          highlight: false,
+
+    if (voices.isEmpty) {
+      return SizedBox(
+        height: 152,
+        child: Center(
+          child: Text(
+            'No voices yet — record or upload one to get started.',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+          ),
         ),
       );
     }
@@ -430,11 +473,64 @@ class _VoiceCarousel extends StatelessWidget {
       height: 152,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        itemCount: cards.length,
+        itemCount: voices.length,
         separatorBuilder: (BuildContext context, int index) => const SizedBox(width: 12),
-        itemBuilder: (BuildContext context, int i) => cards[i],
+        itemBuilder: (BuildContext context, int i) {
+          final v = voices[i];
+          final isSelected = v.voiceId == selectedVoiceId;
+          return GestureDetector(
+            onTap: () => onSelect(v),
+            child: _VoiceCloneCard(
+              name: _HomePageState._displayName(v),
+              subtitle: v.voiceId,
+              badge: isSelected ? 'SELECTED' : 'VOICE',
+              highlight: isSelected,
+              onDelete: () => _confirmDeleteVoice(context, v),
+            ),
+          );
+        },
       ),
     );
+  }
+
+  Future<void> _confirmDeleteVoice(BuildContext context, VoiceUploadResult voice) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete voice?'),
+        content: const Text(
+          'This will permanently remove the voice profile from the server. You can always record a new one.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+
+    try {
+      final client = context.read<XenoStreamApiClient>();
+      await client.deleteVoice(voice.voiceId);
+      if (!context.mounted) return;
+      onRefresh();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Voice deleted.')),
+      );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to delete: $e')),
+        );
+      }
+    }
   }
 }
 
@@ -444,12 +540,14 @@ class _VoiceCloneCard extends StatelessWidget {
     required this.subtitle,
     required this.badge,
     required this.highlight,
+    this.onDelete,
   });
 
   final String name;
   final String subtitle;
   final String badge;
   final bool highlight;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -490,23 +588,50 @@ class _VoiceCloneCard extends StatelessWidget {
                     child: const Icon(Icons.mic_rounded, color: AppColors.primaryPurple),
                   ),
                   const Spacer(),
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: TertiaryPalette.t100,
-                      borderRadius: BorderRadius.circular(6),
+                  if (onDelete != null)
+                    SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: PopupMenuButton<String>(
+                        padding: EdgeInsets.zero,
+                        iconSize: 18,
+                        icon: Icon(Icons.more_vert_rounded, color: AppColors.textSecondary, size: 18),
+                        shape: RoundedRectangleBorder(borderRadius: AppRadii.mdBorder),
+                        onSelected: (value) {
+                          if (value == 'delete') onDelete!();
+                        },
+                        itemBuilder: (_) => [
+                          const PopupMenuItem(
+                            value: 'delete',
+                            child: Row(
+                              children: [
+                                Icon(Icons.delete_outline_rounded, color: Colors.red, size: 20),
+                                SizedBox(width: 10),
+                                Text('Delete voice', style: TextStyle(color: Colors.red)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      child: Text(
-                        badge,
-                        style: textTheme.labelSmall?.copyWith(
-                          color: TertiaryPalette.t700,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 0.4,
+                  if (onDelete == null)
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: TertiaryPalette.t100,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        child: Text(
+                          badge,
+                          style: textTheme.labelSmall?.copyWith(
+                            color: TertiaryPalette.t700,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.4,
+                          ),
                         ),
                       ),
                     ),
-                  ),
                 ],
               ),
               const Spacer(),
@@ -551,21 +676,18 @@ class _QuickSynthesisCard extends StatelessWidget {
   const _QuickSynthesisCard({
     required this.scriptController,
     required this.targetLabel,
-    required this.profile,
     required this.onPickVoice,
     required this.onScriptChanged,
   });
 
   final TextEditingController scriptController;
   final String targetLabel;
-  final VoiceProfile? profile;
   final VoidCallback onPickVoice;
   final ValueChanged<String> onScriptChanged;
 
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    final hintName = profile != null ? 'your locked voice' : 'Sarah';
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -585,7 +707,7 @@ class _QuickSynthesisCard extends StatelessWidget {
           builder: (BuildContext context, SynthesisState state) {
             final bloc = context.read<SynthesisBloc>();
             final isGenerating = state.phase == SynthesisPhase.generating;
-            final canGenerate = state.canGenerate && profile != null;
+            final canGenerate = state.canGenerate;
 
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -616,23 +738,11 @@ class _QuickSynthesisCard extends StatelessWidget {
                           ),
                           const SizedBox(width: 12),
                           Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  targetLabel,
-                                  style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                if (profile case final VoiceProfile p)
-                                  Text(
-                                    p.id,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: textTheme.labelSmall?.copyWith(color: AppColors.textSecondary),
-                                  ),
-                              ],
+                            child: Text(
+                              targetLabel,
+                              style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
                           Icon(Icons.keyboard_arrow_down_rounded, color: AppColors.textSecondary),
@@ -657,7 +767,7 @@ class _QuickSynthesisCard extends StatelessWidget {
                   minLines: 3,
                   onChanged: onScriptChanged,
                   decoration: InputDecoration(
-                    hintText: 'Type what you want $hintName to say…',
+                    hintText: 'Type what you want the selected voice to say…',
                     hintStyle: textTheme.bodyMedium?.copyWith(
                       color: AppColors.textSecondary.withValues(alpha: 0.75),
                     ),
@@ -737,11 +847,11 @@ class _QuickSynthesisCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (profile == null)
+                if (state.selectedVoiceId == null)
                   Padding(
                     padding: const EdgeInsets.only(top: 10),
                     child: Text(
-                      'Lock a voice in Record to enable synthesis.',
+                      'Select a voice above to enable synthesis.',
                       style: textTheme.bodySmall?.copyWith(color: AppColors.textSecondary),
                       textAlign: TextAlign.center,
                     ),
@@ -764,6 +874,7 @@ class _RecentAudioTile extends StatelessWidget {
     required this.isPlaying,
     required this.onPlay,
     this.showProgress = false,
+    this.onDelete,
   });
 
   final String title;
@@ -773,6 +884,7 @@ class _RecentAudioTile extends StatelessWidget {
   final bool isPlaying;
   final VoidCallback onPlay;
   final bool showProgress;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -837,9 +949,25 @@ class _RecentAudioTile extends StatelessWidget {
                       onPressed: () {},
                       icon: Icon(Icons.download_outlined, color: AppColors.textSecondary),
                     ),
-                  IconButton(
-                    onPressed: () {},
+                  PopupMenuButton<String>(
                     icon: Icon(Icons.more_vert_rounded, color: AppColors.textSecondary),
+                    shape: RoundedRectangleBorder(borderRadius: AppRadii.mdBorder),
+                    onSelected: (value) {
+                      if (value == 'delete' && onDelete != null) onDelete!();
+                    },
+                    itemBuilder: (_) => [
+                      if (onDelete != null)
+                        const PopupMenuItem(
+                          value: 'delete',
+                          child: Row(
+                            children: [
+                              Icon(Icons.delete_outline_rounded, color: Colors.red, size: 20),
+                              SizedBox(width: 10),
+                              Text('Delete', style: TextStyle(color: Colors.red)),
+                            ],
+                          ),
+                        ),
+                    ],
                   ),
                 ],
               ),

@@ -18,6 +18,9 @@ final class EnrollmentState extends Equatable {
     this.localRecordingPath,
     this.profile,
     this.errorMessage,
+    this.isPlaying = false,
+    this.playbackPosition = Duration.zero,
+    this.playbackDuration = Duration.zero,
   });
 
   final EnrollmentPhase phase;
@@ -25,6 +28,10 @@ final class EnrollmentState extends Equatable {
   final String? localRecordingPath;
   final VoiceProfile? profile;
   final String? errorMessage;
+
+  final bool isPlaying;
+  final Duration playbackPosition;
+  final Duration playbackDuration;
 
   bool get canSubmit =>
       phase == EnrollmentPhase.readyToSubmit && localRecordingPath != null;
@@ -35,6 +42,9 @@ final class EnrollmentState extends Equatable {
     String? localRecordingPath,
     VoiceProfile? profile,
     String? errorMessage,
+    bool? isPlaying,
+    Duration? playbackPosition,
+    Duration? playbackDuration,
     bool clearRecordingPath = false,
     bool clearError = false,
     bool clearProfile = false,
@@ -46,6 +56,9 @@ final class EnrollmentState extends Equatable {
           clearRecordingPath ? null : (localRecordingPath ?? this.localRecordingPath),
       profile: clearProfile ? null : (profile ?? this.profile),
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
+      isPlaying: isPlaying ?? this.isPlaying,
+      playbackPosition: playbackPosition ?? this.playbackPosition,
+      playbackDuration: playbackDuration ?? this.playbackDuration,
     );
   }
 
@@ -56,5 +69,8 @@ final class EnrollmentState extends Equatable {
         localRecordingPath,
         profile,
         errorMessage,
+        isPlaying,
+        playbackPosition,
+        playbackDuration,
       ];
 }

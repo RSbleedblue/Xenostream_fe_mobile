@@ -4,6 +4,8 @@ import 'package:go_router/go_router.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 
+import '../core/api/api_config.dart';
+import '../core/api/xenostream_api_client.dart';
 import '../core/session/active_voice_profile_store.dart';
 import '../features/voice_enrollment/data/voice_enrollment_repository.dart';
 import '../features/voice_synthesis/data/voice_synthesis_repository.dart';
@@ -14,11 +16,15 @@ import 'theme/app_theme.dart';
 class XenoStreamApp extends StatefulWidget {
   const XenoStreamApp({
     super.key,
+    required this.apiConfig,
+    required this.apiClient,
     required this.activeVoiceProfileStore,
     required this.voiceEnrollmentRepository,
     required this.voiceSynthesisRepository,
   });
 
+  final ApiConfig apiConfig;
+  final XenoStreamApiClient apiClient;
   final ActiveVoiceProfileStore activeVoiceProfileStore;
   final VoiceEnrollmentRepository voiceEnrollmentRepository;
   final VoiceSynthesisRepository voiceSynthesisRepository;
@@ -34,6 +40,8 @@ class _XenoStreamAppState extends State<XenoStreamApp> {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
+        Provider<ApiConfig>.value(value: widget.apiConfig),
+        Provider<XenoStreamApiClient>.value(value: widget.apiClient),
         ChangeNotifierProvider<ActiveVoiceProfileStore>.value(
           value: widget.activeVoiceProfileStore,
         ),

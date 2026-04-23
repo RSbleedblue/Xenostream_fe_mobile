@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -25,14 +27,24 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
     on<EnrollmentElapsedUpdated>(_onElapsedUpdated);
     on<EnrollmentSubmitRequested>(_onSubmitRequested);
     on<EnrollmentResetRequested>(_onResetRequested);
+    on<EnrollmentPlaybackToggled>(_onPlaybackToggled);
+    on<EnrollmentPlaybackPositionChanged>(_onPlaybackPositionChanged);
+    on<EnrollmentPlaybackDurationChanged>(_onPlaybackDurationChanged);
+    on<EnrollmentPlaybackCompleted>(_onPlaybackCompleted);
+    on<EnrollmentPlaybackSeekRequested>(_onPlaybackSeekRequested);
+    on<EnrollmentDeleteRecordingRequested>(_onDeleteRecordingRequested);
   }
 
   final VoiceEnrollmentRepository _repository;
   final ActiveVoiceProfileStore _activeVoiceProfileStore;
 
   final AudioRecorder _recorder = AudioRecorder();
+  final AudioPlayer _player = AudioPlayer();
   Timer? _elapsedTimer;
   DateTime? _recordingStartedAt;
+  StreamSubscription<Duration>? _positionSub;
+  StreamSubscription<Duration?>? _durationSub;
+  StreamSubscription<PlayerState>? _playerStateSub;
 
   Future<void> _onStartRequested(
     EnrollmentStartRequested event,
@@ -42,6 +54,8 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
         state.phase == EnrollmentPhase.submitting) {
       return;
     }
+
+    await _stopPlayback();
 
     final status = await Permission.microphone.request();
     if (!status.isGranted) {
@@ -58,12 +72,19 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
     final tempDir = await getTemporaryDirectory();
     final filePath = p.join(
       tempDir.path,
-      'enrollment_${DateTime.now().millisecondsSinceEpoch}.m4a',
+      'enrollment_${DateTime.now().millisecondsSinceEpoch}.wav',
     );
 
     try {
       await _recorder.start(
-        const RecordConfig(encoder: AudioEncoder.aacLc),
+        const RecordConfig(
+          encoder: AudioEncoder.wav,
+          sampleRate: 24000,
+          numChannels: 1,
+          autoGain: true,
+          noiseSuppress: true,
+          echoCancel: true,
+        ),
         path: filePath,
       );
     } catch (e) {
@@ -95,6 +116,9 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
         phase: EnrollmentPhase.recording,
         elapsed: Duration.zero,
         localRecordingPath: filePath,
+        isPlaying: false,
+        playbackPosition: Duration.zero,
+        playbackDuration: Duration.zero,
         clearError: true,
         clearProfile: true,
       ),
@@ -133,9 +157,7 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
     final path = state.localRecordingPath;
     try {
       await _recorder.stop();
-    } catch (_) {
-      // ignore — still try to surface ready state if path exists
-    }
+    } catch (_) {}
 
     if (path == null || path.isEmpty) {
       emit(
@@ -147,8 +169,118 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
       return;
     }
 
+    await _loadPlayback(path);
     emit(state.copyWith(phase: EnrollmentPhase.readyToSubmit));
   }
+
+  // ---------------------------------------------------------------------------
+  // Playback
+  // ---------------------------------------------------------------------------
+
+  Future<void> _loadPlayback(String filePath) async {
+    _cancelPlaybackSubscriptions();
+    try {
+      await _player.setFilePath(filePath);
+    } catch (_) {
+      return;
+    }
+
+    _positionSub = _player.positionStream.listen((pos) {
+      add(EnrollmentPlaybackPositionChanged(pos));
+    });
+    _durationSub = _player.durationStream.listen((dur) {
+      if (dur != null) add(EnrollmentPlaybackDurationChanged(dur));
+    });
+    _playerStateSub = _player.playerStateStream.listen((ps) {
+      if (ps.processingState == ProcessingState.completed) {
+        add(const EnrollmentPlaybackCompleted());
+      }
+    });
+  }
+
+  Future<void> _onPlaybackToggled(
+    EnrollmentPlaybackToggled event,
+    Emitter<EnrollmentState> emit,
+  ) async {
+    if (state.phase != EnrollmentPhase.readyToSubmit) return;
+
+    if (state.isPlaying) {
+      await _player.pause();
+      emit(state.copyWith(isPlaying: false));
+    } else {
+      if (_player.processingState == ProcessingState.completed) {
+        await _player.seek(Duration.zero);
+      }
+      await _player.play();
+      emit(state.copyWith(isPlaying: true));
+    }
+  }
+
+  void _onPlaybackPositionChanged(
+    EnrollmentPlaybackPositionChanged event,
+    Emitter<EnrollmentState> emit,
+  ) {
+    emit(state.copyWith(playbackPosition: event.position));
+  }
+
+  void _onPlaybackDurationChanged(
+    EnrollmentPlaybackDurationChanged event,
+    Emitter<EnrollmentState> emit,
+  ) {
+    emit(state.copyWith(playbackDuration: event.duration));
+  }
+
+  Future<void> _onPlaybackCompleted(
+    EnrollmentPlaybackCompleted event,
+    Emitter<EnrollmentState> emit,
+  ) async {
+    emit(state.copyWith(isPlaying: false));
+  }
+
+  Future<void> _onPlaybackSeekRequested(
+    EnrollmentPlaybackSeekRequested event,
+    Emitter<EnrollmentState> emit,
+  ) async {
+    await _player.seek(event.position);
+  }
+
+  Future<void> _stopPlayback() async {
+    _cancelPlaybackSubscriptions();
+    try {
+      await _player.stop();
+    } catch (_) {}
+  }
+
+  void _cancelPlaybackSubscriptions() {
+    _positionSub?.cancel();
+    _positionSub = null;
+    _durationSub?.cancel();
+    _durationSub = null;
+    _playerStateSub?.cancel();
+    _playerStateSub = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Delete recording
+  // ---------------------------------------------------------------------------
+
+  Future<void> _onDeleteRecordingRequested(
+    EnrollmentDeleteRecordingRequested event,
+    Emitter<EnrollmentState> emit,
+  ) async {
+    await _stopPlayback();
+    final path = state.localRecordingPath;
+    if (path != null) {
+      try {
+        await File(path).delete();
+      } catch (_) {}
+    }
+    emit(const EnrollmentState());
+  }
+
+  // ---------------------------------------------------------------------------
+  // Submit
+  // ---------------------------------------------------------------------------
 
   Future<void> _onSubmitRequested(
     EnrollmentSubmitRequested event,
@@ -159,6 +291,8 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
     final path = state.localRecordingPath;
     if (path == null) return;
 
+    await _stopPlayback();
+
     emit(
       state.copyWith(
         phase: EnrollmentPhase.submitting,
@@ -167,7 +301,10 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
     );
 
     try {
-      final profile = await _repository.enroll(localAudioPath: path);
+      final profile = await _repository.enroll(
+        localAudioPath: path,
+        name: event.name,
+      );
       _activeVoiceProfileStore.setProfile(profile);
       emit(
         state.copyWith(
@@ -192,6 +329,7 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
     _elapsedTimer?.cancel();
     _elapsedTimer = null;
     _recordingStartedAt = null;
+    await _stopPlayback();
     if (await _recorder.isRecording()) {
       await _recorder.stop();
     }
@@ -201,10 +339,12 @@ class EnrollmentBloc extends Bloc<EnrollmentEvent, EnrollmentState> {
   @override
   Future<void> close() async {
     _elapsedTimer?.cancel();
+    _cancelPlaybackSubscriptions();
     if (await _recorder.isRecording()) {
       await _recorder.stop();
     }
     await _recorder.dispose();
+    await _player.dispose();
     return super.close();
   }
 }

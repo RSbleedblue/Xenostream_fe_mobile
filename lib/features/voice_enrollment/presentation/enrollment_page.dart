@@ -10,8 +10,21 @@ import 'bloc/enrollment_bloc.dart';
 import 'bloc/enrollment_event.dart';
 import 'bloc/enrollment_state.dart';
 
-class EnrollmentPage extends StatelessWidget {
+class EnrollmentPage extends StatefulWidget {
   const EnrollmentPage({super.key});
+
+  @override
+  State<EnrollmentPage> createState() => _EnrollmentPageState();
+}
+
+class _EnrollmentPageState extends State<EnrollmentPage> {
+  final _nameController = TextEditingController();
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -40,7 +53,7 @@ class EnrollmentPage extends StatelessWidget {
           final bloc = context.read<EnrollmentBloc>();
           final isRecording = state.phase == EnrollmentPhase.recording;
           final isSubmitting = state.phase == EnrollmentPhase.submitting;
-          final canStop = isRecording;
+          final isReady = state.phase == EnrollmentPhase.readyToSubmit;
           final progress = switch (state.phase) {
             EnrollmentPhase.recording =>
               state.elapsed.inMilliseconds /
@@ -81,12 +94,15 @@ class EnrollmentPage extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               Text(
-                'Speak naturally for up to two minutes. Stop when you are done, then lock your voice.',
+                'Speak naturally for up to two minutes. Stop when you are done, '
+                'preview playback, then lock your voice.',
                 style: textTheme.bodyMedium?.copyWith(
                   color: AppColors.textSecondary,
                 ),
               ),
               const SizedBox(height: 24),
+
+              // ---- Recording progress card ----
               DecoratedBox(
                 decoration: BoxDecoration(
                   color: AppColors.card,
@@ -108,8 +124,7 @@ class EnrollmentPage extends StatelessWidget {
                         borderRadius: AppRadii.mdBorder,
                         child: LinearProgressIndicator(
                           value:
-                              (isRecording ||
-                                  state.phase == EnrollmentPhase.readyToSubmit)
+                              (isRecording || isReady)
                               ? progress.clamp(0, 1)
                               : 0,
                           minHeight: 10,
@@ -129,6 +144,8 @@ class EnrollmentPage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 20),
+
+              // ---- Record / Stop buttons ----
               Row(
                 children: [
                   Expanded(
@@ -137,13 +154,13 @@ class EnrollmentPage extends StatelessWidget {
                           ? null
                           : () => bloc.add(const EnrollmentStartRequested()),
                       icon: const Icon(Icons.fiber_manual_record),
-                      label: const Text('Record'),
+                      label: Text(isReady ? 'Re-record' : 'Record'),
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: canStop
+                      onPressed: isRecording
                           ? () => bloc.add(const EnrollmentStopRequested())
                           : null,
                       icon: const Icon(Icons.stop_rounded),
@@ -152,37 +169,243 @@ class EnrollmentPage extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: state.canSubmit && !isSubmitting
-                    ? () => bloc.add(const EnrollmentSubmitRequested())
-                    : null,
-                icon: isSubmitting
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.lock_outline),
-                label: Text(isSubmitting ? 'Locking voice…' : 'Lock voice'),
-              ),
-              const SizedBox(height: 8),
-              TextButton(
-                onPressed: isSubmitting
-                    ? null
-                    : () => bloc.add(const EnrollmentResetRequested()),
-                child: const Text('Reset session'),
-              ),
-              if (state.phase == EnrollmentPhase.success) ...[
+
+              // ---- Playback & name section (shown after recording) ----
+              if (isReady || isSubmitting) ...[
+                const SizedBox(height: 24),
+                _PlaybackCard(state: state, bloc: bloc),
+                const SizedBox(height: 20),
+                TextField(
+                  controller: _nameController,
+                  textCapitalization: TextCapitalization.words,
+                  decoration: InputDecoration(
+                    labelText: 'Voice name',
+                    hintText: 'e.g. "My natural voice"',
+                    prefixIcon: const Icon(Icons.label_outline),
+                    border: OutlineInputBorder(
+                      borderRadius: AppRadii.mdBorder,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: state.canSubmit && !isSubmitting
+                      ? () {
+                          final raw = _nameController.text.trim();
+                          bloc.add(EnrollmentSubmitRequested(
+                            name: raw.isEmpty ? null : raw,
+                          ));
+                        }
+                      : null,
+                  icon: isSubmitting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.lock_outline),
+                  label: Text(isSubmitting ? 'Locking voice…' : 'Lock voice'),
+                ),
                 const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: isSubmitting
+                      ? null
+                      : () =>
+                          bloc.add(const EnrollmentDeleteRecordingRequested()),
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Delete recording'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.redAccent,
+                    side: const BorderSide(color: Colors.redAccent),
+                  ),
+                ),
+              ],
+
+              // ---- Idle / recording phase: simpler reset ----
+              if (!isReady && !isSubmitting && state.phase != EnrollmentPhase.success) ...[
+                const SizedBox(height: 12),
+                if (state.phase != EnrollmentPhase.idle)
+                  TextButton(
+                    onPressed: () =>
+                        bloc.add(const EnrollmentResetRequested()),
+                    child: const Text('Reset session'),
+                  ),
+              ],
+
+              // ---- Success state ----
+              if (state.phase == EnrollmentPhase.success) ...[
+                const SizedBox(height: 24),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    borderRadius: AppRadii.lgBorder,
+                    border: Border.all(color: Colors.green.shade200),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      children: [
+                        Icon(Icons.check_circle, color: Colors.green.shade600),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Voice locked!',
+                                style: textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.green.shade800,
+                                ),
+                              ),
+                              if (state.profile != null)
+                                Text(
+                                  state.profile!.displayName,
+                                  style: textTheme.bodySmall?.copyWith(
+                                    color: Colors.green.shade700,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
                 OutlinedButton(
                   onPressed: () => context.go('/library'),
                   child: const Text('Continue to Library'),
+                ),
+                const SizedBox(height: 4),
+                TextButton(
+                  onPressed: () {
+                    _nameController.clear();
+                    bloc.add(const EnrollmentResetRequested());
+                  },
+                  child: const Text('Record another voice'),
                 ),
               ],
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Playback card
+// -----------------------------------------------------------------------------
+
+class _PlaybackCard extends StatelessWidget {
+  const _PlaybackCard({required this.state, required this.bloc});
+
+  final EnrollmentState state;
+  final EnrollmentBloc bloc;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    final totalMs = state.playbackDuration.inMilliseconds;
+    final posMs = state.playbackPosition.inMilliseconds;
+    final sliderMax = totalMs > 0 ? totalMs.toDouble() : 1.0;
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: AppRadii.xlBorder,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.headphones_rounded,
+                  color: AppColors.primaryPurple,
+                  size: 20,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Preview recording',
+                  style: textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                IconButton(
+                  onPressed: state.phase == EnrollmentPhase.readyToSubmit
+                      ? () => bloc.add(const EnrollmentPlaybackToggled())
+                      : null,
+                  icon: Icon(
+                    state.isPlaying
+                        ? Icons.pause_circle_filled
+                        : Icons.play_circle_filled,
+                  ),
+                  iconSize: 40,
+                  color: AppColors.primaryPurple,
+                  padding: EdgeInsets.zero,
+                ),
+                Expanded(
+                  child: SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      trackHeight: 4,
+                      thumbShape:
+                          const RoundSliderThumbShape(enabledThumbRadius: 7),
+                      overlayShape:
+                          const RoundSliderOverlayShape(overlayRadius: 14),
+                      activeTrackColor: AppColors.primaryPurple,
+                      inactiveTrackColor: AppColors.chipBackground,
+                      thumbColor: AppColors.primaryPurple,
+                    ),
+                    child: Slider(
+                      value: posMs.toDouble().clamp(0, sliderMax),
+                      max: sliderMax,
+                      onChanged: (v) => bloc.add(
+                        EnrollmentPlaybackSeekRequested(
+                          Duration(milliseconds: v.round()),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    formatDurationMmSs(state.playbackPosition),
+                    style: textTheme.bodySmall?.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  Text(
+                    formatDurationMmSs(state.playbackDuration),
+                    style: textTheme.bodySmall?.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
