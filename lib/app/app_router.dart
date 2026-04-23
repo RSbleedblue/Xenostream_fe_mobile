@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
-import 'package:just_audio/just_audio.dart';
 
 import '../core/session/active_voice_profile_store.dart';
 import '../features/home/presentation/home_page.dart';
@@ -9,8 +8,6 @@ import '../features/settings/presentation/settings_page.dart';
 import '../features/voice_enrollment/data/voice_enrollment_repository.dart';
 import '../features/voice_enrollment/presentation/bloc/enrollment_bloc.dart';
 import '../features/voice_enrollment/presentation/enrollment_page.dart';
-import '../features/voice_synthesis/data/voice_synthesis_repository.dart';
-import '../features/voice_synthesis/presentation/bloc/synthesis_bloc.dart';
 import '../features/voice_synthesis/presentation/synthesis_page.dart';
 import 'widgets/app_shell.dart';
 
@@ -61,16 +58,7 @@ GoRouter createAppRouter() {
               GoRoute(
                 path: '/library',
                 pageBuilder: (BuildContext context, GoRouterState state) {
-                  return NoTransitionPage<void>(
-                    child: BlocProvider(
-                      create: (BuildContext ctx) => SynthesisBloc(
-                        repository: ctx.read<VoiceSynthesisRepository>(),
-                        activeVoiceProfileStore: ctx.read<ActiveVoiceProfileStore>(),
-                        audioPlayer: AudioPlayer(),
-                      ),
-                      child: const SynthesisPage(),
-                    ),
-                  );
+                  return const NoTransitionPage<void>(child: SynthesisPage());
                 },
               ),
             ],
