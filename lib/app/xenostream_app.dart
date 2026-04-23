@@ -4,6 +4,8 @@ import 'package:go_router/go_router.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 
+import '../core/api/api_config.dart';
+import '../core/api/xenostream_api_client.dart';
 import '../core/session/active_voice_profile_store.dart';
 import '../features/voice_enrollment/data/voice_enrollment_repository.dart';
 import '../features/voice_synthesis/data/voice_synthesis_repository.dart';
@@ -43,13 +45,16 @@ class _XenoStreamAppState extends State<XenoStreamApp> {
         Provider<VoiceSynthesisRepository>.value(
           value: widget.voiceSynthesisRepository,
         ),
+        Provider<ApiConfig>.value(value: ApiConfig.defaults()),
+        Provider<XenoStreamApiClient>(
+          create: (BuildContext ctx) => XenoStreamApiClient(ctx.read<ApiConfig>()),
+        ),
       ],
       child: Builder(
         builder: (BuildContext context) {
           return BlocProvider<SynthesisBloc>(
             create: (BuildContext ctx) => SynthesisBloc(
               repository: ctx.read<VoiceSynthesisRepository>(),
-              activeVoiceProfileStore: ctx.read<ActiveVoiceProfileStore>(),
               audioPlayer: AudioPlayer(),
             ),
             child: MaterialApp.router(

@@ -1,12 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
-import 'package:provider/provider.dart';
 
 import '../../../app/theme/app_colors.dart';
 import '../../../app/theme/app_radii.dart';
 import '../../../app/theme/app_theme.dart';
-import '../../../core/session/active_voice_profile_store.dart';
 import 'bloc/synthesis_bloc.dart';
 import 'bloc/synthesis_event.dart';
 import 'bloc/synthesis_state.dart';
@@ -126,6 +124,15 @@ class _SynthesisPageState extends State<SynthesisPage> {
                   ],
                 ),
               ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => context.go('/record'),
+                icon: const Icon(Icons.mic_rounded, size: 20),
+                label: const Text('Add Voice'),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                ),
+              ),
               const SizedBox(height: 20),
               _ScriptCard(
                 controller: _controller,
@@ -141,7 +148,7 @@ class _SynthesisPageState extends State<SynthesisPage> {
               ),
               const SizedBox(height: 24),
               Text(
-                'LOCKED IN VOICE',
+                'SELECTED VOICE',
                 style: textTheme.labelSmall?.copyWith(
                   letterSpacing: 1.1,
                   color: AppColors.textSecondary,
@@ -149,101 +156,89 @@ class _SynthesisPageState extends State<SynthesisPage> {
                 ),
               ),
               const SizedBox(height: 10),
-              Consumer<ActiveVoiceProfileStore>(
-                builder: (BuildContext context, ActiveVoiceProfileStore store, _) {
-                  final profile = store.profile;
-                  return DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: AppColors.card,
-                      borderRadius: AppRadii.xlBorder,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.06),
-                          blurRadius: 20,
-                          offset: const Offset(0, 8),
-                        ),
-                      ],
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: AppColors.card,
+                  borderRadius: AppRadii.xlBorder,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.06),
+                      blurRadius: 20,
+                      offset: const Offset(0, 8),
                     ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: profile == null
-                          ? Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'No voice profile yet',
-                                  style: textTheme.titleMedium?.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  'Record in the Record tab, then lock your voice to enable synthesis.',
-                                  style: textTheme.bodySmall?.copyWith(
-                                    color: AppColors.textSecondary,
-                                  ),
-                                ),
-                                const SizedBox(height: 12),
-                                TextButton.icon(
-                                  onPressed: () => context.go('/record'),
-                                  icon: const Icon(Icons.mic_rounded),
-                                  label: const Text('Go to Record'),
-                                ),
-                              ],
-                            )
-                          : Row(
-                              children: [
-                                CircleAvatar(
-                                  radius: 28,
-                                  backgroundColor: AppColors.primaryPurple
-                                      .withValues(alpha: 0.12),
-                                  child: const Icon(
-                                    Icons.person_rounded,
-                                    color: AppColors.primaryPurple,
-                                    size: 30,
-                                  ),
-                                ),
-                                const SizedBox(width: 14),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Your voice',
-                                        style: textTheme.titleMedium?.copyWith(
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        'Cloned • Studio quality',
-                                        style: textTheme.bodySmall?.copyWith(
-                                          color: AppColors.textSecondary,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        profile.id,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: textTheme.labelSmall?.copyWith(
-                                          color: AppColors.textSecondary,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                Icon(
-                                  Icons.circle,
-                                  size: 10,
-                                  color: AppColors.primaryPurple,
-                                ),
-                              ],
+                  ],
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: state.selectedVoiceId == null
+                      ? Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'No voice selected',
+                              style: textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
-                    ),
-                  );
-                },
+                            const SizedBox(height: 8),
+                            Text(
+                              'Choose a voice on the Home screen or add one in Record.',
+                              style: textTheme.bodySmall?.copyWith(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            TextButton.icon(
+                              onPressed: () => context.go('/home'),
+                              icon: const Icon(Icons.home_rounded),
+                              label: const Text('Go to Home'),
+                            ),
+                          ],
+                        )
+                      : Row(
+                          children: [
+                            CircleAvatar(
+                              radius: 28,
+                              backgroundColor: AppColors.primaryPurple.withValues(
+                                alpha: 0.12,
+                              ),
+                              child: const Icon(
+                                Icons.person_rounded,
+                                color: AppColors.primaryPurple,
+                                size: 30,
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Active for synthesis',
+                                    style: textTheme.titleMedium?.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    state.selectedVoiceId!,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: textTheme.labelSmall?.copyWith(
+                                      color: AppColors.textSecondary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Icon(
+                              Icons.circle,
+                              size: 10,
+                              color: AppColors.primaryPurple,
+                            ),
+                          ],
+                        ),
+                ),
               ),
               const SizedBox(height: 20),
               Text(

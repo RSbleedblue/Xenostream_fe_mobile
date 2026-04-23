@@ -8,7 +8,7 @@ import 'app_palette.dart';
 /// Prefer palette tokens for new surfaces; keep using [AppColors] for
 /// consistent imports across existing widgets.
 abstract final class AppColors {
-  static const Color canvas = NeutralPalette.n50;
+  static const Color canvas = PrimaryPalette.p50;
   static const Color primaryPurple = PrimaryPalette.p500;
   static const Color primaryPurpleDeep = SecondaryPalette.s800;
   static const Color accentViolet = TertiaryPalette.t500;

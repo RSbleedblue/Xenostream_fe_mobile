@@ -10,6 +10,14 @@ class VoiceProfile extends Equatable {
   final String id;
   final DateTime createdAt;
 
+  /// Short label for pickers and headers.
+  String get displayName {
+    if (id.length <= 20) {
+      return id;
+    }
+    return '${id.substring(0, 8)}…';
+  }
+
   @override
   List<Object?> get props => [id, createdAt];
 }
