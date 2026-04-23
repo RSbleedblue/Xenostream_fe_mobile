@@ -127,6 +127,15 @@ class _SynthesisPageState extends State<SynthesisPage> {
                   ],
                 ),
               ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => context.go('/record'),
+                icon: const Icon(Icons.mic_rounded, size: 20),
+                label: const Text('Add Voice'),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                ),
+              ),
               const SizedBox(height: 20),
               _ScriptCard(
                 controller: _controller,

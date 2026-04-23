@@ -20,7 +20,7 @@ class ApiConfig {
   static const String _baseUrlFromEnv =
       String.fromEnvironment('API_BASE_URL', defaultValue: '');
   static const String _apiKeyFromEnv =
-      String.fromEnvironment('API_KEY', defaultValue: '');
+      String.fromEnvironment('API_KEY', defaultValue: 'change-me');
 
   /// Resolves a sensible default backend URL for the current platform.
   factory ApiConfig.defaults() {

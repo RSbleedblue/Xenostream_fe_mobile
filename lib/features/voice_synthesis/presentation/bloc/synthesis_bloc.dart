@@ -14,10 +14,10 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
     required ActiveVoiceProfileStore activeVoiceProfileStore,
     required AudioPlayer audioPlayer,
   })  : _repository = repository,
-        _activeVoiceProfileStore = activeVoiceProfileStore,
         _audioPlayer = audioPlayer,
         super(const SynthesisState()) {
     on<SynthesisTextChanged>(_onTextChanged);
+    on<SynthesisVoiceSelected>(_onVoiceSelected);
     on<SynthesisGenerateRequested>(_onGenerateRequested);
     on<SynthesisPlayPauseToggled>(_onPlayPauseToggled);
     on<SynthesisPlaybackEnded>(_onPlaybackEnded);
@@ -31,7 +31,6 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
   }
 
   final VoiceSynthesisRepository _repository;
-  final ActiveVoiceProfileStore _activeVoiceProfileStore;
   final AudioPlayer _audioPlayer;
 
   late final StreamSubscription<PlayerState> _playerStateSubscription;
@@ -56,18 +55,25 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
     );
   }
 
+  void _onVoiceSelected(
+    SynthesisVoiceSelected event,
+    Emitter<SynthesisState> emit,
+  ) {
+    emit(state.copyWith(selectedVoiceId: event.voiceId));
+  }
+
   Future<void> _onGenerateRequested(
     SynthesisGenerateRequested event,
     Emitter<SynthesisState> emit,
   ) async {
     if (!state.canGenerate) return;
 
-    final profile = _activeVoiceProfileStore.profile;
-    if (profile == null) {
+    final voiceId = state.selectedVoiceId;
+    if (voiceId == null) {
       emit(
         state.copyWith(
           phase: SynthesisPhase.failure,
-          errorMessage: 'Enroll and lock a voice before synthesizing.',
+          errorMessage: 'Select a voice before synthesizing.',
           clearResult: true,
         ),
       );
@@ -85,7 +91,7 @@ class SynthesisBloc extends Bloc<SynthesisEvent, SynthesisState> {
     try {
       await _audioPlayer.stop();
       final result = await _repository.synthesize(
-        voiceProfileId: profile.id,
+        voiceProfileId: voiceId,
         text: state.text.trim(),
       );
       if (result.audioFilePath != null) {
